@@ -7,7 +7,6 @@ build = "build.rs"
 [lib]
 name = "rustdoc"
 path = "lib.rs"
-crate-type = ["dylib"]
 
 [dependencies]
 arena = { path = "../libarena" }

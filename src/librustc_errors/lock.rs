@@ -109,7 +109,7 @@ pub fn acquire_global_lock(name: &str) -> Box<Any> {
     }
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, target_os = "redox"))]
 pub fn acquire_global_lock(_name: &str) -> Box<Any> {
     Box::new(())
 }

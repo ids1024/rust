@@ -7,7 +7,6 @@ build = "build.rs"
 [lib]
 name = "flate"
 path = "lib.rs"
-crate-type = ["dylib"]
 
 [build-dependencies]
 build_helper = { path = "../build_helper" }

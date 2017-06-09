@@ -6,4 +6,3 @@ version = "0.0.0"
 [lib]
 name = "term"
 path = "lib.rs"
-crate-type = ["dylib", "rlib"]

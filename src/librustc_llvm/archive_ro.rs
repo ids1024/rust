@@ -57,7 +57,7 @@ impl ArchiveRO {
             let p: &OsStr = p.as_ref();
             CString::new(p.as_bytes()).unwrap()
         }
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "redox"))]
         fn path2cstr(p: &Path) -> CString {
             CString::new(p.to_str().unwrap()).unwrap()
         }

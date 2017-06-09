@@ -1247,6 +1247,10 @@ fn stderr_isatty() -> bool {
     use libc;
     unsafe { libc::isatty(libc::STDERR_FILENO) != 0 }
 }
+#[cfg(target_os = "redox")]
+fn stderr_isatty() -> bool {
+    true
+}
 #[cfg(windows)]
 fn stderr_isatty() -> bool {
     type DWORD = u32;

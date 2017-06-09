@@ -7,7 +7,6 @@ build = "build.rs"
 [lib]
 name = "rustc_llvm"
 path = "lib.rs"
-crate-type = ["dylib"]
 
 [features]
 static-libstdcpp = []

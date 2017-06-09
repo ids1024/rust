@@ -6,7 +6,6 @@ version = "0.0.0"
 [lib]
 name = "rustc_trans"
 path = "lib.rs"
-crate-type = ["dylib"]
 test = false
 
 [dependencies]

@@ -6,4 +6,3 @@ version = "0.0.0"
 [lib]
 name = "getopts"
 path = "lib.rs"
-crate-type = ["dylib", "rlib"]
