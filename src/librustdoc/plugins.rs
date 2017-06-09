@@ -12,18 +12,18 @@
 
 use clean;
 
-use std::mem;
+//use std::mem;
 use std::string::String;
 use std::path::PathBuf;
 
-use rustc_back::dynamic_lib as dl;
+//use rustc_back::dynamic_lib as dl;
 
 pub type PluginResult = clean::Crate;
 pub type PluginCallback = fn (clean::Crate) -> PluginResult;
 
 /// Manages loading and running of plugins
 pub struct PluginManager {
-    dylibs: Vec<dl::DynamicLibrary> ,
+    //dylibs: Vec<dl::DynamicLibrary> ,
     callbacks: Vec<PluginCallback> ,
     /// The directory plugins will be loaded from
     pub prefix: PathBuf,
@@ -33,7 +33,7 @@ impl PluginManager {
     /// Create a new plugin manager
     pub fn new(prefix: PathBuf) -> PluginManager {
         PluginManager {
-            dylibs: Vec::new(),
+            //dylibs: Vec::new(),
             callbacks: Vec::new(),
             prefix: prefix,
         }
@@ -44,7 +44,9 @@ impl PluginManager {
     /// Turns `name` into the proper dynamic library filename for the given
     /// platform. On windows, it turns into name.dll, on macOS, name.dylib, and
     /// elsewhere, libname.so.
-    pub fn load_plugin(&mut self, name: String) {
+    pub fn load_plugin(&mut self, _name: String) {
+        panic!("Compiler plugins not yet supported on Redox")
+        /*
         let x = self.prefix.join(libname(name));
         let lib_result = dl::DynamicLibrary::open(Some(&x));
         let lib = lib_result.unwrap();
@@ -53,6 +55,7 @@ impl PluginManager {
             self.callbacks.push(mem::transmute::<*mut u8,PluginCallback>(plugin));
         }
         self.dylibs.push(lib);
+        */
     }
 
     /// Load a normal Rust function as a plugin.
@@ -71,6 +74,7 @@ impl PluginManager {
     }
 }
 
+/*
 #[cfg(target_os = "windows")]
 fn libname(mut n: String) -> String {
     n.push_str(".dll");
@@ -90,3 +94,4 @@ fn libname(n: String) -> String {
     i.push_str(".so");
     i
 }
+*/

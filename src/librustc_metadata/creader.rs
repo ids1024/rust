@@ -611,8 +611,10 @@ impl<'a> CrateLoader<'a> {
     /// implemented as dynamic libraries, but we have a possible future where
     /// custom derive (and other macro-1.1 style features) are implemented via
     /// executables and custom IPC.
-    fn load_derive_macros(&mut self, root: &CrateRoot, dylib: Option<PathBuf>, span: Span)
+    fn load_derive_macros(&mut self, _root: &CrateRoot, _dylib: Option<PathBuf>, span: Span)
                           -> Vec<(ast::Name, Rc<SyntaxExtension>)> {
+        span_bug!(span, "proc-macro not yet supported on Redox")
+        /*
         use std::{env, mem};
         use proc_macro::TokenStream;
         use proc_macro::__internal::Registry;
@@ -680,6 +682,7 @@ impl<'a> CrateLoader<'a> {
         // since the library can make things that will live arbitrarily long.
         mem::forget(lib);
         my_registrar.0
+        */
     }
 
     /// Look for a plugin registrar. Returns library path, crate

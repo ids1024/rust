@@ -10,12 +10,12 @@
 
 use std::collections::HashMap;
 use std::env;
-use std::ffi::OsString;
+//use std::ffi::OsString;
 use std::io::prelude::*;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::panic::{self, AssertUnwindSafe};
-use std::process::Command;
+//use std::process::Command;
 use std::rc::Rc;
 use std::str;
 use std::sync::{Arc, Mutex};
@@ -27,8 +27,8 @@ use rustc::hir;
 use rustc::hir::intravisit;
 use rustc::session::{self, config};
 use rustc::session::config::{OutputType, OutputTypes, Externs};
-use rustc::session::search_paths::{SearchPaths, PathKind};
-use rustc_back::dynamic_lib::DynamicLibrary;
+use rustc::session::search_paths::{SearchPaths};
+//use rustc_back::dynamic_lib::DynamicLibrary;
 use rustc_back::tempdir::TempDir;
 use rustc_driver::{self, driver, Compilation};
 use rustc_driver::driver::phase_2_configure_and_expand;
@@ -169,7 +169,7 @@ fn scrape_test_config(krate: &::rustc::hir::Crate) -> TestOptions {
 
 fn runtest(test: &str, cratename: &str, cfgs: Vec<String>, libs: SearchPaths,
            externs: Externs,
-           should_panic: bool, no_run: bool, as_test_harness: bool,
+           _should_panic: bool, no_run: bool, as_test_harness: bool,
            compile_fail: bool, mut error_codes: Vec<String>, opts: &TestOptions,
            maybe_sysroot: Option<PathBuf>) {
     // the test harness wants its own `main` & top level functions, so
@@ -239,7 +239,7 @@ fn runtest(test: &str, cratename: &str, cfgs: Vec<String>, libs: SearchPaths,
     rustc_lint::register_builtins(&mut sess.lint_store.borrow_mut(), Some(&sess));
 
     let outdir = Mutex::new(TempDir::new("rustdoctest").ok().expect("rustdoc needs a tempdir"));
-    let libdir = sess.target_filesearch(PathKind::All).get_lib_path();
+    //let libdir = sess.target_filesearch(PathKind::All).get_lib_path();
     let mut control = driver::CompileController::basic();
     sess.parse_sess.config =
         config::build_configuration(&sess, config::parse_cfgspecs(cfgs.clone()));
@@ -290,6 +290,7 @@ fn runtest(test: &str, cratename: &str, cfgs: Vec<String>, libs: SearchPaths,
 
     if no_run { return }
 
+    /*
     // Run the code!
     //
     // We're careful to prepend the *target* dylib search path to the child's
@@ -321,6 +322,7 @@ fn runtest(test: &str, cratename: &str, cfgs: Vec<String>, libs: SearchPaths,
             }
         }
     }
+    */
 }
 
 pub fn maketest(s: &str, cratename: Option<&str>, dont_insert_main: bool,

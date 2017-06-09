@@ -16,8 +16,8 @@ use rustc_metadata::cstore::CStore;
 use registry::Registry;
 
 use std::borrow::ToOwned;
-use std::env;
-use std::mem;
+//use std::env;
+//use std::mem;
 use std::path::PathBuf;
 use syntax::ast;
 use syntax_pos::{Span, DUMMY_SP};
@@ -113,8 +113,10 @@ impl<'a> PluginLoader<'a> {
     // Dynamically link a registrar function into the compiler process.
     fn dylink_registrar(&mut self,
                         span: Span,
-                        path: PathBuf,
-                        symbol: String) -> PluginRegistrarFun {
+                        _path: PathBuf,
+                        _symbol: String) -> PluginRegistrarFun {
+        self.sess.span_fatal(span, "Compiler plugins not yet supported on Redox")
+        /*
         use rustc_back::dynamic_lib::DynamicLibrary;
 
         // Make sure the path contains a / or the linker will search for it.
@@ -149,5 +151,6 @@ impl<'a> PluginLoader<'a> {
 
             registrar
         }
+    */
     }
 }

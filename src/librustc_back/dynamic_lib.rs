@@ -12,6 +12,7 @@
 //!
 //! A simple wrapper over the platform's dynamic library facilities
 
+/*
 use std::env;
 use std::ffi::{CString, OsString};
 use std::path::{Path, PathBuf};
@@ -318,3 +319,4 @@ mod dl {
         }
     }
 }
+*/

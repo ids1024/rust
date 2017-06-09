@@ -20,7 +20,7 @@
 #![feature(conservative_impl_trait)]
 #![feature(core_intrinsics)]
 #![feature(i128_type)]
-#![feature(proc_macro_internals)]
+//#![feature(proc_macro_internals)]
 #![feature(quote)]
 #![feature(rustc_diagnostic_macros)]
 #![feature(specialization)]
