@@ -34,9 +34,11 @@ pub fn init(sess: &Session) {
             configure_llvm(sess);
         });
 
+        /*
         if POISONED.load(Ordering::SeqCst) {
             bug!("couldn't enable multi-threaded LLVM");
         }
+        */
     }
 }
 
