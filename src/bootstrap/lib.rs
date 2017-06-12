@@ -474,6 +474,8 @@ impl Build {
                  .env(format!("CFLAGS_{}", target), self.cflags(target).join(" "));
         }
 
+        cargo.env(format!("CXX_{}", target), self.cxx(target));
+
         if self.config.extended && compiler.is_final_stage(self) {
             cargo.env("RUSTC_SAVE_ANALYSIS", "api".to_string());
         }
