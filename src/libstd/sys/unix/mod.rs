@@ -13,6 +13,7 @@ use libc;
 #[cfg(all(not(rustdoc), target_os = "ios"))]       pub use os::ios as platform;
 #[cfg(all(not(rustdoc), target_os = "macos"))]     pub use os::macos as platform;
 #[cfg(all(not(rustdoc), target_os = "netbsd"))]    pub use os::netbsd as platform;
+#[cfg(all(not(rustdoc), target_os = "minix"))]    pub use os::netbsd as platform;
 #[cfg(all(not(rustdoc), target_os = "openbsd"))]   pub use os::openbsd as platform;
 #[cfg(all(not(rustdoc), target_os = "solaris"))]   pub use os::solaris as platform;
 #[cfg(all(not(rustdoc), target_os = "emscripten"))] pub use os::emscripten as platform;

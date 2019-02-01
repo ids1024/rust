@@ -37,7 +37,8 @@ extern {
                    target_os = "openbsd",
                    target_os = "android",
                    target_os = "hermit",
-                   target_env = "newlib"),
+                   target_env = "newlib",
+                   target_os = "minix"),
                link_name = "__errno")]
     #[cfg_attr(target_os = "solaris", link_name = "___errno")]
     #[cfg_attr(any(target_os = "macos",
@@ -224,7 +225,8 @@ pub fn current_exe() -> io::Result<PathBuf> {
     }
 }
 
-#[cfg(target_os = "netbsd")]
+// XXX minix
+#[cfg(any(target_os = "netbsd", target_os = "minix"))]
 pub fn current_exe() -> io::Result<PathBuf> {
     fn sysctl() -> io::Result<PathBuf> {
         unsafe {

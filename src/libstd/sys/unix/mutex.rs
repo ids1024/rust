@@ -21,7 +21,16 @@ impl Mutex {
         // locking is undefined behavior until `init` is called!
         Mutex { inner: UnsafeCell::new(libc::PTHREAD_MUTEX_INITIALIZER) }
     }
+
+    #[cfg(target_os = "minix")]
+    pub unsafe fn init(&mut self) {
+        use ptr;
+        let r = libc::pthread_mutex_init(self.inner.get(), ptr::null());
+        debug_assert_eq!(r, 0);
+    }
+
     #[inline]
+    #[cfg(not(target_os = "minix"))]
     pub unsafe fn init(&mut self) {
         // Issue #33770
         //
@@ -94,6 +103,14 @@ impl ReentrantMutex {
         ReentrantMutex { inner: mem::uninitialized() }
     }
 
+    #[cfg(target_os = "minix")]
+    pub unsafe fn init(&mut self) {
+        use ptr;
+        let result = libc::pthread_mutex_init(self.inner.get(), ptr::null());
+        debug_assert_eq!(result, 0);
+    }
+
+    #[cfg(not(target_os = "minix"))]
     pub unsafe fn init(&mut self) {
         let mut attr: libc::pthread_mutexattr_t = mem::uninitialized();
         let result = libc::pthread_mutexattr_init(&mut attr as *mut _);

@@ -104,7 +104,7 @@ impl FileAttr {
     }
 }
 
-#[cfg(target_os = "netbsd")]
+#[cfg(any(target_os = "netbsd", target_os = "minix"))]
 impl FileAttr {
     pub fn modified(&self) -> io::Result<SystemTime> {
         Ok(SystemTime::from(libc::timespec {
@@ -128,7 +128,7 @@ impl FileAttr {
     }
 }
 
-#[cfg(not(target_os = "netbsd"))]
+#[cfg(not(any(target_os = "netbsd", target_os = "minix")))]
 impl FileAttr {
     pub fn modified(&self) -> io::Result<SystemTime> {
         Ok(SystemTime::from(libc::timespec {
@@ -352,7 +352,8 @@ impl DirEntry {
               target_os = "openbsd",
               target_os = "bitrig",
               target_os = "netbsd",
-              target_os = "dragonfly"))]
+              target_os = "dragonfly",
+              target_os = "minix"))]
     pub fn ino(&self) -> u64 {
         self.entry.d_fileno as u64
     }
@@ -363,7 +364,8 @@ impl DirEntry {
               target_os = "openbsd",
               target_os = "freebsd",
               target_os = "dragonfly",
-              target_os = "bitrig"))]
+              target_os = "bitrig",
+              target_os = "minix"))]
     fn name_bytes(&self) -> &[u8] {
         unsafe {
             ::slice::from_raw_parts(self.entry.d_name.as_ptr() as *const u8,

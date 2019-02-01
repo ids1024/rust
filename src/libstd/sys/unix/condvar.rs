@@ -32,14 +32,16 @@ impl Condvar {
               target_os = "ios",
               target_os = "l4re",
               target_os = "android",
-              target_os = "hermit"))]
+              target_os = "hermit",
+              target_os = "minix"))]
     pub unsafe fn init(&mut self) {}
 
     #[cfg(not(any(target_os = "macos",
                   target_os = "ios",
                   target_os = "l4re",
                   target_os = "android",
-                  target_os = "hermit")))]
+                  target_os = "hermit",
+                  target_os = "minix")))]
     pub unsafe fn init(&mut self) {
         use mem;
         let mut attr: libc::pthread_condattr_t = mem::uninitialized();
@@ -94,12 +96,13 @@ impl Condvar {
             .and_then(|s| s.checked_add(now.tv_sec));
         let nsec = nsec % 1_000_000_000;
 
-        let timeout = sec.map(|s| {
+        let _timeout = sec.map(|s| {
             libc::timespec { tv_sec: s, tv_nsec: nsec as _}
         }).unwrap_or(TIMESPEC_MAX);
 
-        let r = libc::pthread_cond_timedwait(self.inner.get(), mutex::raw(mutex),
-                                            &timeout);
+        //XXX
+        let r = libc::pthread_cond_wait(self.inner.get(), mutex::raw(mutex),
+                                            );
         assert!(r == libc::ETIMEDOUT || r == 0);
         r == 0
     }
@@ -153,8 +156,8 @@ impl Condvar {
         }).unwrap_or(TIMESPEC_MAX);
 
         // And wait!
-        let r = libc::pthread_cond_timedwait(self.inner.get(), mutex::raw(mutex),
-                                            &timeout);
+        let r = libc::pthread_cond_wait(self.inner.get(), mutex::raw(mutex),
+                                            );
         debug_assert!(r == libc::ETIMEDOUT || r == 0);
 
         // ETIMEDOUT is not a totally reliable method of determining timeout due

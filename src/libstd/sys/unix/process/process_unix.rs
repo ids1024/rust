@@ -226,7 +226,11 @@ impl Command {
             } else {
                 t!(cvt(libc::sigemptyset(&mut set)));
             }
+            #[cfg(not(target_os = "minix"))]
             t!(cvt(libc::pthread_sigmask(libc::SIG_SETMASK, &set,
+                                         ptr::null_mut())));
+            #[cfg(target_os = "minix")]
+            t!(cvt(libc::sigprocmask(libc::SIG_SETMASK, &set,
                                          ptr::null_mut())));
             let ret = sys::signal(libc::SIGPIPE, libc::SIG_DFL);
             if ret == libc::SIG_ERR {

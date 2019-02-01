@@ -14,13 +14,25 @@ unsafe impl Sync for RWLock {}
 impl RWLock {
     pub const fn new() -> RWLock {
         RWLock {
+            #[cfg(target_os = "minix")]
+            inner: UnsafeCell::new(-1isize as _),
+            #[cfg(not(target_os = "minix"))]
             inner: UnsafeCell::new(libc::PTHREAD_RWLOCK_INITIALIZER),
             write_locked: UnsafeCell::new(false),
             num_readers: AtomicUsize::new(0),
         }
     }
+    #[cfg(target_os = "minix")]
+    unsafe fn init(&self) {
+        if self.inner.get() != -1isize as _ {
+            libc::pthread_rwlock_init(self.inner.get(), ::ptr::null());
+        }
+    }
+    #[cfg(not(target_os = "minix"))]
+    unsafe fn init(&self) {}
     #[inline]
     pub unsafe fn read(&self) {
+        self.init();
         let r = libc::pthread_rwlock_rdlock(self.inner.get());
 
         // According to the pthread_rwlock_rdlock spec, this function **may**
@@ -54,7 +66,9 @@ impl RWLock {
     }
     #[inline]
     pub unsafe fn try_read(&self) -> bool {
-        let r = libc::pthread_rwlock_tryrdlock(self.inner.get());
+        // XXX
+        self.init();
+        let r = libc::pthread_rwlock_rdlock(self.inner.get());
         if r == 0 {
             if *self.write_locked.get() {
                 self.raw_unlock();
@@ -69,6 +83,7 @@ impl RWLock {
     }
     #[inline]
     pub unsafe fn write(&self) {
+        self.init();
         let r = libc::pthread_rwlock_wrlock(self.inner.get());
         // See comments above for why we check for EDEADLK and write_locked. We
         // also need to check that num_readers is 0.
@@ -85,7 +100,9 @@ impl RWLock {
     }
     #[inline]
     pub unsafe fn try_write(&self) -> bool {
-        let r = libc::pthread_rwlock_trywrlock(self.inner.get());
+        // XXX
+        self.init();
+        let r = libc::pthread_rwlock_wrlock(self.inner.get());
         if r == 0 {
             if *self.write_locked.get() || self.num_readers.load(Ordering::Relaxed) != 0 {
                 self.raw_unlock();
@@ -100,6 +117,7 @@ impl RWLock {
     }
     #[inline]
     unsafe fn raw_unlock(&self) {
+        self.init();
         let r = libc::pthread_rwlock_unlock(self.inner.get());
         debug_assert_eq!(r, 0);
     }
@@ -118,6 +136,7 @@ impl RWLock {
     }
     #[inline]
     pub unsafe fn destroy(&self) {
+        self.init();
         let r = libc::pthread_rwlock_destroy(self.inner.get());
         // On DragonFly pthread_rwlock_destroy() returns EINVAL if called on a
         // rwlock that was just initialized with

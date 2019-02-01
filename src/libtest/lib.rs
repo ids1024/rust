@@ -1248,7 +1248,8 @@ fn get_concurrency() -> usize {
     }
 
     #[cfg(any(all(target_arch = "wasm32", not(target_os = "emscripten")),
-              all(target_vendor = "fortanix", target_env = "sgx")))]
+              all(target_vendor = "fortanix", target_env = "sgx"),
+              target_os = "minix"))]
     fn num_cpus() -> usize {
         1
     }

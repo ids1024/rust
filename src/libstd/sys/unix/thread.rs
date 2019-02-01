@@ -116,7 +116,7 @@ impl Thread {
         }
     }
 
-    #[cfg(target_os = "netbsd")]
+    #[cfg(any(target_os = "netbsd"))]
     pub fn set_name(name: &CStr) {
         use ffi::CString;
         let cname = CString::new(&b"%s"[..]).unwrap();
@@ -130,7 +130,8 @@ impl Thread {
               target_os = "haiku",
               target_os = "l4re",
               target_os = "emscripten",
-              target_os = "hermit"))]
+              target_os = "hermit",
+              target_os = "minix"))]
     pub fn set_name(_name: &CStr) {
         // Newlib, Illumos, Haiku, and Emscripten have no way to set a thread name.
     }
@@ -417,12 +418,13 @@ fn min_stack_size(attr: *const libc::pthread_attr_t) -> usize {
 // No point in looking up __pthread_get_minstack() on non-glibc
 // platforms.
 #[cfg(all(not(target_os = "linux"),
-          not(target_os = "netbsd")))]
+          not(target_os = "netbsd"),
+          not(target_os = "minix")))]
 fn min_stack_size(_: *const libc::pthread_attr_t) -> usize {
     libc::PTHREAD_STACK_MIN
 }
 
-#[cfg(target_os = "netbsd")]
+#[cfg(any(target_os = "netbsd", target_os = "minix"))]
 fn min_stack_size(_: *const libc::pthread_attr_t) -> usize {
     2048 // just a guess
 }
