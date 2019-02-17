@@ -96,13 +96,12 @@ impl Condvar {
             .and_then(|s| s.checked_add(now.tv_sec));
         let nsec = nsec % 1_000_000_000;
 
-        let _timeout = sec.map(|s| {
+        let timeout = sec.map(|s| {
             libc::timespec { tv_sec: s, tv_nsec: nsec as _}
         }).unwrap_or(TIMESPEC_MAX);
 
-        //XXX
-        let r = libc::pthread_cond_wait(self.inner.get(), mutex::raw(mutex),
-                                            );
+        let r = libc::pthread_cond_timedwait(self.inner.get(), mutex::raw(mutex),
+                                            &timeout);
         assert!(r == libc::ETIMEDOUT || r == 0);
         r == 0
     }
@@ -156,8 +155,8 @@ impl Condvar {
         }).unwrap_or(TIMESPEC_MAX);
 
         // And wait!
-        let r = libc::pthread_cond_wait(self.inner.get(), mutex::raw(mutex),
-                                            );
+        let r = libc::pthread_cond_timedwait(self.inner.get(), mutex::raw(mutex),
+                                            &timeout);
         debug_assert!(r == libc::ETIMEDOUT || r == 0);
 
         // ETIMEDOUT is not a totally reliable method of determining timeout due
