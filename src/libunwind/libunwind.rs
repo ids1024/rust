@@ -1,10 +1,5 @@
 #![allow(nonstandard_style)]
 
-macro_rules! cfg_if {
-    ( $( if #[cfg( $meta:meta )] { $($it1:item)* } else { $($it2:item)* } )* ) =>
-        ( $( $( #[cfg($meta)] $it1)* $( #[cfg(not($meta))] $it2)* )* )
-}
-
 use libc::{c_int, c_void, uintptr_t};
 
 #[repr(C)]
@@ -21,7 +16,7 @@ pub enum _Unwind_Reason_Code {
     _URC_CONTINUE_UNWIND = 8,
     _URC_FAILURE = 9, // used only by ARM EHABI
 }
-pub use self::_Unwind_Reason_Code::*;
+pub use _Unwind_Reason_Code::*;
 
 pub type _Unwind_Exception_Class = u64;
 pub type _Unwind_Word = uintptr_t;
@@ -82,7 +77,7 @@ extern "C" {
     pub fn _Unwind_GetDataRelBase(ctx: *mut _Unwind_Context) -> _Unwind_Ptr;
 }
 
-cfg_if! {
+cfg_if::cfg_if! {
 if #[cfg(all(any(target_os = "ios", target_os = "netbsd", not(target_arch = "arm"))))] {
     // Not ARM EHABI
     #[repr(C)]
@@ -94,7 +89,7 @@ if #[cfg(all(any(target_os = "ios", target_os = "netbsd", not(target_arch = "arm
         _UA_FORCE_UNWIND = 8,
         _UA_END_OF_STACK = 16,
     }
-    pub use self::_Unwind_Action::*;
+    pub use _Unwind_Action::*;
 
     extern "C" {
         pub fn _Unwind_GetGR(ctx: *mut _Unwind_Context, reg_index: c_int) -> _Unwind_Word;
@@ -118,7 +113,7 @@ if #[cfg(all(any(target_os = "ios", target_os = "netbsd", not(target_arch = "arm
         _US_FORCE_UNWIND = 8,
         _US_END_OF_STACK = 16,
     }
-    pub use self::_Unwind_State::*;
+    pub use _Unwind_State::*;
 
     #[repr(C)]
     enum _Unwind_VRS_Result {
@@ -134,7 +129,7 @@ if #[cfg(all(any(target_os = "ios", target_os = "netbsd", not(target_arch = "arm
         _UVRSC_WMMXD = 3,
         _UVRSC_WMMXC = 4,
     }
-    use self::_Unwind_VRS_RegClass::*;
+    use _Unwind_VRS_RegClass::*;
     #[repr(C)]
     enum _Unwind_VRS_DataRepresentation {
         _UVRSD_UINT32 = 0,
@@ -144,7 +139,7 @@ if #[cfg(all(any(target_os = "ios", target_os = "netbsd", not(target_arch = "arm
         _UVRSD_FLOAT = 4,
         _UVRSD_DOUBLE = 5,
     }
-    use self::_Unwind_VRS_DataRepresentation::*;
+    use _Unwind_VRS_DataRepresentation::*;
 
     pub const UNWIND_POINTER_REG: c_int = 12;
     pub const UNWIND_IP_REG: c_int = 15;
@@ -206,7 +201,9 @@ if #[cfg(all(any(target_os = "ios", target_os = "netbsd", not(target_arch = "arm
         pc
     }
 }
+} // cfg_if!
 
+cfg_if::cfg_if! {
 if #[cfg(not(all(target_os = "ios", target_arch = "arm")))] {
     // Not 32-bit iOS
     extern "C" {

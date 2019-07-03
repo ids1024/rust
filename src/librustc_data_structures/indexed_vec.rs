@@ -12,7 +12,7 @@ use rustc_serialize as serialize;
 
 /// Represents some newtyped `usize` wrapper.
 ///
-/// (purpose: avoid mixing indexes for different bitvector domains.)
+/// Purpose: avoid mixing indexes for different bitvector domains.
 pub trait Idx: Copy + 'static + Ord + Debug + Hash {
     fn new(idx: usize) -> Self;
 
@@ -58,9 +58,10 @@ macro_rules! newtype_index {
     // ---- public rules ----
 
     // Use default constants
-    ($v:vis struct $name:ident { .. }) => (
+    ($(#[$attrs:meta])* $v:vis struct $name:ident { .. }) => (
         newtype_index!(
             // Leave out derives marker so we can use its absence to ensure it comes first
+            @attrs        [$(#[$attrs])*]
             @type         [$name]
             // shave off 256 indices at the end to allow space for packing these indices into enums
             @max          [0xFFFF_FF00]
@@ -69,9 +70,10 @@ macro_rules! newtype_index {
     );
 
     // Define any constants
-    ($v:vis struct $name:ident { $($tokens:tt)+ }) => (
+    ($(#[$attrs:meta])* $v:vis struct $name:ident { $($tokens:tt)+ }) => (
         newtype_index!(
             // Leave out derives marker so we can use its absence to ensure it comes first
+            @attrs        [$(#[$attrs])*]
             @type         [$name]
             // shave off 256 indices at the end to allow space for packing these indices into enums
             @max          [0xFFFF_FF00]
@@ -84,10 +86,12 @@ macro_rules! newtype_index {
 
     // Base case, user-defined constants (if any) have already been defined
     (@derives      [$($derives:ident,)*]
+     @attrs        [$(#[$attrs:meta])*]
      @type         [$type:ident]
      @max          [$max:expr]
      @vis          [$v:vis]
      @debug_format [$debug_format:tt]) => (
+        $(#[$attrs])*
         #[derive(Copy, PartialEq, Eq, Hash, PartialOrd, Ord, $($derives),*)]
         #[rustc_layout_scalar_valid_range_end($max)]
         $v struct $type {
@@ -144,19 +148,19 @@ macro_rules! newtype_index {
                 unsafe { $type { private: value } }
             }
 
-            /// Extract value of this index as an integer.
+            /// Extracts the value of this index as an integer.
             #[inline]
             $v fn index(self) -> usize {
                 self.as_usize()
             }
 
-            /// Extract value of this index as a usize.
+            /// Extracts the value of this index as a `u32`.
             #[inline]
             $v fn as_u32(self) -> u32 {
                 self.private
             }
 
-            /// Extract value of this index as a u32.
+            /// Extracts the value of this index as a `usize`.
             #[inline]
             $v fn as_usize(self) -> usize {
                 self.as_u32() as usize
@@ -208,6 +212,11 @@ macro_rules! newtype_index {
             fn add_usize(&self, u: usize) -> Option<Self> {
                 Idx::index(*self).checked_add(u).map(Self::new)
             }
+
+            #[inline]
+            fn sub_usize(&self, u: usize) -> Option<Self> {
+                Idx::index(*self).checked_sub(u).map(Self::new)
+            }
         }
 
         impl From<$type> for u32 {
@@ -257,7 +266,7 @@ macro_rules! newtype_index {
      @type         [$type:ident]
      @debug_format [$debug_format:tt]) => (
         impl ::std::fmt::Debug for $type {
-            fn fmt(&self, fmt: &mut ::std::fmt::Formatter) -> ::std::fmt::Result {
+            fn fmt(&self, fmt: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
                 write!(fmt, $debug_format, self.as_u32())
             }
         }
@@ -282,13 +291,15 @@ macro_rules! newtype_index {
     );
 
     // Append comma to end of derives list if it's missing
-    (@type         [$type:ident]
+    (@attrs        [$(#[$attrs:meta])*]
+     @type         [$type:ident]
      @max          [$max:expr]
      @vis          [$v:vis]
      @debug_format [$debug_format:tt]
                    derive [$($derives:ident),*]
                    $($tokens:tt)*) => (
         newtype_index!(
+            @attrs        [$(#[$attrs])*]
             @type         [$type]
             @max          [$max]
             @vis          [$v]
@@ -299,7 +310,8 @@ macro_rules! newtype_index {
 
     // By not including the @derives marker in this list nor in the default args, we can force it
     // to come first if it exists. When encodable is custom, just use the derives list as-is.
-    (@type         [$type:ident]
+    (@attrs        [$(#[$attrs:meta])*]
+     @type         [$type:ident]
      @max          [$max:expr]
      @vis          [$v:vis]
      @debug_format [$debug_format:tt]
@@ -307,6 +319,7 @@ macro_rules! newtype_index {
                    ENCODABLE = custom
                    $($tokens:tt)*) => (
         newtype_index!(
+            @attrs        [$(#[$attrs])*]
             @derives      [$($derives,)+]
             @type         [$type]
             @max          [$max]
@@ -317,7 +330,8 @@ macro_rules! newtype_index {
 
     // By not including the @derives marker in this list nor in the default args, we can force it
     // to come first if it exists. When encodable isn't custom, add serialization traits by default.
-    (@type         [$type:ident]
+    (@attrs        [$(#[$attrs:meta])*]
+     @type         [$type:ident]
      @max          [$max:expr]
      @vis          [$v:vis]
      @debug_format [$debug_format:tt]
@@ -325,6 +339,7 @@ macro_rules! newtype_index {
                    $($tokens:tt)*) => (
         newtype_index!(
             @derives      [$($derives,)+ RustcEncodable,]
+            @attrs        [$(#[$attrs])*]
             @type         [$type]
             @max          [$max]
             @vis          [$v]
@@ -335,7 +350,8 @@ macro_rules! newtype_index {
 
     // The case where no derives are added, but encodable is overridden. Don't
     // derive serialization traits
-    (@type         [$type:ident]
+    (@attrs        [$(#[$attrs:meta])*]
+     @type         [$type:ident]
      @max          [$max:expr]
      @vis          [$v:vis]
      @debug_format [$debug_format:tt]
@@ -343,6 +359,7 @@ macro_rules! newtype_index {
                    $($tokens:tt)*) => (
         newtype_index!(
             @derives      []
+            @attrs        [$(#[$attrs])*]
             @type         [$type]
             @max          [$max]
             @vis          [$v]
@@ -351,13 +368,15 @@ macro_rules! newtype_index {
     );
 
     // The case where no derives are added, add serialization derives by default
-    (@type         [$type:ident]
+    (@attrs        [$(#[$attrs:meta])*]
+     @type         [$type:ident]
      @max          [$max:expr]
      @vis          [$v:vis]
      @debug_format [$debug_format:tt]
                    $($tokens:tt)*) => (
         newtype_index!(
             @derives      [RustcEncodable,]
+            @attrs        [$(#[$attrs])*]
             @type         [$type]
             @max          [$max]
             @vis          [$v]
@@ -384,6 +403,7 @@ macro_rules! newtype_index {
 
     // Rewrite final without comma to one that includes comma
     (@derives      [$($derives:ident,)*]
+     @attrs        [$(#[$attrs:meta])*]
      @type         [$type:ident]
      @max          [$max:expr]
      @vis          [$v:vis]
@@ -391,6 +411,7 @@ macro_rules! newtype_index {
                    $name:ident = $constant:expr) => (
         newtype_index!(
             @derives      [$($derives,)*]
+            @attrs        [$(#[$attrs])*]
             @type         [$type]
             @max          [$max]
             @vis          [$v]
@@ -400,6 +421,7 @@ macro_rules! newtype_index {
 
     // Rewrite final const without comma to one that includes comma
     (@derives      [$($derives:ident,)*]
+     @attrs        [$(#[$attrs:meta])*]
      @type         [$type:ident]
      @max          [$_max:expr]
      @vis          [$v:vis]
@@ -408,6 +430,7 @@ macro_rules! newtype_index {
                    const $name:ident = $constant:expr) => (
         newtype_index!(
             @derives      [$($derives,)*]
+            @attrs        [$(#[$attrs])*]
             @type         [$type]
             @max          [$max]
             @vis          [$v]
@@ -417,6 +440,7 @@ macro_rules! newtype_index {
 
     // Replace existing default for max
     (@derives      [$($derives:ident,)*]
+     @attrs        [$(#[$attrs:meta])*]
      @type         [$type:ident]
      @max          [$_max:expr]
      @vis          [$v:vis]
@@ -425,6 +449,7 @@ macro_rules! newtype_index {
                    $($tokens:tt)*) => (
         newtype_index!(
             @derives      [$($derives,)*]
+            @attrs        [$(#[$attrs])*]
             @type         [$type]
             @max          [$max]
             @vis          [$v]
@@ -434,6 +459,7 @@ macro_rules! newtype_index {
 
     // Replace existing default for debug_format
     (@derives      [$($derives:ident,)*]
+     @attrs        [$(#[$attrs:meta])*]
      @type         [$type:ident]
      @max          [$max:expr]
      @vis          [$v:vis]
@@ -442,6 +468,7 @@ macro_rules! newtype_index {
                    $($tokens:tt)*) => (
         newtype_index!(
             @derives      [$($derives,)*]
+            @attrs        [$(#[$attrs])*]
             @type         [$type]
             @max          [$max]
             @vis          [$v]
@@ -451,6 +478,7 @@ macro_rules! newtype_index {
 
     // Assign a user-defined constant
     (@derives      [$($derives:ident,)*]
+     @attrs        [$(#[$attrs:meta])*]
      @type         [$type:ident]
      @max          [$max:expr]
      @vis          [$v:vis]
@@ -462,6 +490,7 @@ macro_rules! newtype_index {
         pub const $name: $type = $type::from_u32_const($constant);
         newtype_index!(
             @derives      [$($derives,)*]
+            @attrs        [$(#[$attrs])*]
             @type         [$type]
             @max          [$max]
             @vis          [$v]
@@ -495,7 +524,7 @@ impl<I: Idx, T: serialize::Decodable> serialize::Decodable for IndexVec<I, T> {
 }
 
 impl<I: Idx, T: fmt::Debug> fmt::Debug for IndexVec<I, T> {
-    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Debug::fmt(&self.raw, fmt)
     }
 }
@@ -573,7 +602,7 @@ impl<I: Idx, T> IndexVec<I, T> {
     }
 
     #[inline]
-    pub fn iter(&self) -> slice::Iter<T> {
+    pub fn iter(&self) -> slice::Iter<'_, T> {
         self.raw.iter()
     }
 
@@ -589,7 +618,7 @@ impl<I: Idx, T> IndexVec<I, T> {
     }
 
     #[inline]
-    pub fn iter_mut(&mut self) -> slice::IterMut<T> {
+    pub fn iter_mut(&mut self) -> slice::IterMut<'_, T> {
         self.raw.iter_mut()
     }
 
@@ -641,7 +670,7 @@ impl<I: Idx, T> IndexVec<I, T> {
         self.raw.get_mut(index.index())
     }
 
-    /// Return mutable references to two distinct elements, a and b. Panics if a == b.
+    /// Returns mutable references to two distinct elements, a and b. Panics if a == b.
     #[inline]
     pub fn pick2_mut(&mut self, a: I, b: I) -> (&mut T, &mut T) {
         let (ai, bi) = (a.index(), b.index());

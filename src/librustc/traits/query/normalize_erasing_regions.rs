@@ -7,10 +7,10 @@
 //! `normalize_ty_after_erasing_regions` query for each type found
 //! within. (This underlying query is what is cached.)
 
-use ty::{self, Ty, TyCtxt};
-use ty::fold::{TypeFoldable, TypeFolder};
+use crate::ty::{self, Ty, TyCtxt};
+use crate::ty::fold::{TypeFoldable, TypeFolder};
 
-impl<'cx, 'tcx> TyCtxt<'cx, 'tcx, 'tcx> {
+impl<'tcx> TyCtxt<'tcx> {
     /// Erase the regions in `value` and then fully normalize all the
     /// types found within. The result will also have regions erased.
     ///
@@ -45,7 +45,7 @@ impl<'cx, 'tcx> TyCtxt<'cx, 'tcx, 'tcx> {
     /// a `T` (with regions erased). This is appropriate when the
     /// binder is being instantiated at the call site.
     ///
-    /// NB. Currently, higher-ranked type bounds inhibit
+    /// N.B., currently, higher-ranked type bounds inhibit
     /// normalization. Therefore, each time we erase them in
     /// codegen, we need to normalize the contents.
     pub fn normalize_erasing_late_bound_regions<T>(
@@ -62,13 +62,13 @@ impl<'cx, 'tcx> TyCtxt<'cx, 'tcx, 'tcx> {
     }
 }
 
-struct NormalizeAfterErasingRegionsFolder<'cx, 'tcx: 'cx> {
-    tcx: TyCtxt<'cx, 'tcx, 'tcx>,
+struct NormalizeAfterErasingRegionsFolder<'tcx> {
+    tcx: TyCtxt<'tcx>,
     param_env: ty::ParamEnv<'tcx>,
 }
 
-impl<'cx, 'tcx> TypeFolder<'tcx, 'tcx> for NormalizeAfterErasingRegionsFolder<'cx, 'tcx> {
-    fn tcx<'a>(&'a self) -> TyCtxt<'a, 'tcx, 'tcx> {
+impl TypeFolder<'tcx> for NormalizeAfterErasingRegionsFolder<'tcx> {
+    fn tcx(&self) -> TyCtxt<'tcx> {
         self.tcx
     }
 

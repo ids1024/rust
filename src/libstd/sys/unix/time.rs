@@ -1,10 +1,10 @@
-use cmp::Ordering;
-use libc;
-use time::Duration;
+use crate::cmp::Ordering;
+use crate::time::Duration;
+
 use core::hash::{Hash, Hasher};
 
 pub use self::inner::{Instant, SystemTime, UNIX_EPOCH};
-use convert::TryInto;
+use crate::convert::TryInto;
 
 const NSEC_PER_SEC: u64 = 1_000_000_000;
 
@@ -113,12 +113,12 @@ impl Hash for Timespec {
 
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 mod inner {
-    use fmt;
-    use libc;
-    use sync::Once;
-    use sys::cvt;
-    use sys_common::mul_div_u64;
-    use time::Duration;
+    use crate::fmt;
+    use crate::mem;
+    use crate::sync::atomic::{AtomicUsize, Ordering::SeqCst};
+    use crate::sys::cvt;
+    use crate::sys_common::mul_div_u64;
+    use crate::time::Duration;
 
     use super::NSEC_PER_SEC;
     use super::Timespec;
@@ -150,12 +150,11 @@ mod inner {
             true
         }
 
-        pub fn sub_instant(&self, other: &Instant) -> Duration {
+        pub fn checked_sub_instant(&self, other: &Instant) -> Option<Duration> {
+            let diff = self.t.checked_sub(other.t)?;
             let info = info();
-            let diff = self.t.checked_sub(other.t)
-                           .expect("second instant is later than self");
             let nanos = mul_div_u64(diff, info.numer as u64, info.denom as u64);
-            Duration::new(nanos / NSEC_PER_SEC, (nanos % NSEC_PER_SEC) as u32)
+            Some(Duration::new(nanos / NSEC_PER_SEC, (nanos % NSEC_PER_SEC) as u32))
         }
 
         pub fn checked_add_duration(&self, other: &Duration) -> Option<Instant> {
@@ -173,7 +172,7 @@ mod inner {
 
     impl SystemTime {
         pub fn now() -> SystemTime {
-            use ptr;
+            use crate::ptr;
 
             let mut s = libc::timeval {
                 tv_sec: 0,
@@ -215,7 +214,7 @@ mod inner {
     }
 
     impl fmt::Debug for SystemTime {
-        fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
             f.debug_struct("SystemTime")
              .field("tv_sec", &self.t.t.tv_sec)
              .field("tv_nsec", &self.t.t.tv_nsec)
@@ -231,28 +230,39 @@ mod inner {
         Some(mul_div_u64(nanos, info.denom as u64, info.numer as u64))
     }
 
-    fn info() -> &'static libc::mach_timebase_info {
+    fn info() -> libc::mach_timebase_info {
         static mut INFO: libc::mach_timebase_info = libc::mach_timebase_info {
             numer: 0,
             denom: 0,
         };
-        static ONCE: Once = Once::new();
+        static STATE: AtomicUsize = AtomicUsize::new(0);
 
         unsafe {
-            ONCE.call_once(|| {
-                libc::mach_timebase_info(&mut INFO);
-            });
-            &INFO
+            // If a previous thread has filled in this global state, use that.
+            if STATE.load(SeqCst) == 2 {
+                return INFO;
+            }
+
+            // ... otherwise learn for ourselves ...
+            let mut info = mem::zeroed();
+            libc::mach_timebase_info(&mut info);
+
+            // ... and attempt to be the one thread that stores it globally for
+            // all other threads
+            if STATE.compare_exchange(0, 1, SeqCst, SeqCst).is_ok() {
+                INFO = info;
+                STATE.store(2, SeqCst);
+            }
+            return info;
         }
     }
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "ios")))]
 mod inner {
-    use fmt;
-    use libc;
-    use sys::cvt;
-    use time::Duration;
+    use crate::fmt;
+    use crate::sys::cvt;
+    use crate::time::Duration;
 
     use super::Timespec;
 
@@ -287,10 +297,8 @@ mod inner {
             false // last clause, used so `||` is always trailing above
         }
 
-        pub fn sub_instant(&self, other: &Instant) -> Duration {
-            self.t.sub_timespec(&other.t).unwrap_or_else(|_| {
-                panic!("specified instant was later than self")
-            })
+        pub fn checked_sub_instant(&self, other: &Instant) -> Option<Duration> {
+            self.t.sub_timespec(&other.t).ok()
         }
 
         pub fn checked_add_duration(&self, other: &Duration) -> Option<Instant> {
@@ -303,7 +311,7 @@ mod inner {
     }
 
     impl fmt::Debug for Instant {
-        fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
             f.debug_struct("Instant")
              .field("tv_sec", &self.t.t.tv_sec)
              .field("tv_nsec", &self.t.t.tv_nsec)
@@ -337,7 +345,7 @@ mod inner {
     }
 
     impl fmt::Debug for SystemTime {
-        fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
             f.debug_struct("SystemTime")
              .field("tv_sec", &self.t.t.tv_sec)
              .field("tv_nsec", &self.t.t.tv_nsec)

@@ -1,14 +1,13 @@
+use rustc::hir;
 use rustc::infer::canonical::{Canonical, QueryResponse};
 use rustc::traits::query::{normalize::NormalizationResult, CanonicalProjectionGoal, NoSolution};
 use rustc::traits::{self, ObligationCause, SelectionContext, TraitEngineExt};
 use rustc::ty::query::Providers;
 use rustc::ty::{ParamEnvAnd, TyCtxt};
-use rustc_data_structures::sync::Lrc;
 use std::sync::atomic::Ordering;
-use syntax::ast::DUMMY_NODE_ID;
 use syntax_pos::DUMMY_SP;
 
-crate fn provide(p: &mut Providers) {
+crate fn provide(p: &mut Providers<'_>) {
     *p = Providers {
         normalize_projection_ty,
         ..*p
@@ -16,9 +15,9 @@ crate fn provide(p: &mut Providers) {
 }
 
 fn normalize_projection_ty<'tcx>(
-    tcx: TyCtxt<'_, 'tcx, 'tcx>,
+    tcx: TyCtxt<'tcx>,
     goal: CanonicalProjectionGoal<'tcx>,
-) -> Result<Lrc<Canonical<'tcx, QueryResponse<'tcx, NormalizationResult<'tcx>>>>, NoSolution> {
+) -> Result<&'tcx Canonical<'tcx, QueryResponse<'tcx, NormalizationResult<'tcx>>>, NoSolution> {
     debug!("normalize_provider(goal={:#?})", goal);
 
     tcx.sess
@@ -34,7 +33,7 @@ fn normalize_projection_ty<'tcx>(
              value: goal,
          }| {
             let selcx = &mut SelectionContext::new(infcx);
-            let cause = ObligationCause::misc(DUMMY_SP, DUMMY_NODE_ID);
+            let cause = ObligationCause::misc(DUMMY_SP, hir::DUMMY_HIR_ID);
             let mut obligations = vec![];
             let answer = traits::normalize_projection_type(
                 selcx,

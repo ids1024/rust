@@ -21,29 +21,29 @@
 pub use self::Level::*;
 pub use self::LintSource::*;
 
-use rustc_data_structures::sync::{self, Lrc};
+use rustc_data_structures::sync;
 
+use crate::hir::def_id::{CrateNum, LOCAL_CRATE};
+use crate::hir::intravisit;
+use crate::hir;
+use crate::lint::builtin::BuiltinLintDiagnostics;
+use crate::lint::builtin::parser::{QUESTION_MARK_MACRO_SEP, ILL_FORMED_ATTRIBUTE_INPUT};
+use crate::session::{Session, DiagnosticMessageId};
+use crate::ty::TyCtxt;
+use crate::ty::query::Providers;
+use crate::util::nodemap::NodeMap;
 use errors::{DiagnosticBuilder, DiagnosticId};
-use hir::def_id::{CrateNum, LOCAL_CRATE};
-use hir::intravisit;
-use hir;
-use lint::builtin::BuiltinLintDiagnostics;
-use lint::builtin::parser::{QUESTION_MARK_MACRO_SEP, ILL_FORMED_ATTRIBUTE_INPUT};
-use session::{Session, DiagnosticMessageId};
 use std::{hash, ptr};
 use syntax::ast;
-use syntax::source_map::{MultiSpan, ExpnFormat};
+use syntax::source_map::{MultiSpan, ExpnFormat, CompilerDesugaringKind};
 use syntax::early_buffered_lints::BufferedEarlyLintId;
 use syntax::edition::Edition;
-use syntax::symbol::Symbol;
+use syntax::symbol::{Symbol, sym};
 use syntax_pos::Span;
-use ty::TyCtxt;
-use ty::query::Providers;
-use util::nodemap::NodeMap;
 
-pub use lint::context::{LateContext, EarlyContext, LintContext, LintStore,
-                        check_crate, check_ast_crate, CheckLintNameResult,
-                        FutureIncompatibleInfo, BufferedEarlyLint};
+pub use crate::lint::context::{LateContext, EarlyContext, LintContext, LintStore,
+                        check_crate, check_ast_crate, late_lint_mod, CheckLintNameResult,
+                        FutureIncompatibleInfo, BufferedEarlyLint,};
 
 /// Specification of a single lint.
 #[derive(Copy, Clone, Debug)]
@@ -72,7 +72,7 @@ pub struct Lint {
     /// `default_level`.
     pub edition_lint_opts: Option<(Edition, Level)>,
 
-    /// Whether this lint is reported even inside expansions of external macros
+    /// `true` if this lint is reported even inside expansions of external macros.
     pub report_in_external_macro: bool,
 }
 
@@ -85,7 +85,7 @@ impl Lint {
         }
     }
 
-    /// Get the lint's name, with ASCII letters converted to lowercase.
+    /// Gets the lint's name, with ASCII letters converted to lowercase.
     pub fn name_lower(&self) -> String {
         self.name.to_ascii_lowercase()
     }
@@ -98,7 +98,7 @@ impl Lint {
     }
 }
 
-/// Declare a static item of type `&'static Lint`.
+/// Declares a static item of type `&'static Lint`.
 #[macro_export]
 macro_rules! declare_lint {
     ($vis: vis $NAME: ident, $Level: ident, $desc: expr) => (
@@ -131,14 +131,22 @@ macro_rules! declare_lint {
 
 #[macro_export]
 macro_rules! declare_tool_lint {
-    ($vis: vis $tool: ident ::$NAME: ident, $Level: ident, $desc: expr) => (
-        declare_tool_lint!{$vis $tool::$NAME, $Level, $desc, false}
+    (
+        $(#[$attr:meta])* $vis:vis $tool:ident ::$NAME:ident, $Level: ident, $desc: expr
+    ) => (
+        declare_tool_lint!{$(#[$attr])* $vis $tool::$NAME, $Level, $desc, false}
     );
-    ($vis: vis $tool: ident ::$NAME: ident, $Level: ident, $desc: expr,
-     report_in_external_macro: $rep: expr) => (
-         declare_tool_lint!{$vis $tool::$NAME, $Level, $desc, $rep}
+    (
+        $(#[$attr:meta])* $vis:vis $tool:ident ::$NAME:ident, $Level:ident, $desc:expr,
+        report_in_external_macro: $rep:expr
+    ) => (
+         declare_tool_lint!{$(#[$attr])* $vis $tool::$NAME, $Level, $desc, $rep}
     );
-    ($vis: vis $tool: ident ::$NAME: ident, $Level: ident, $desc: expr, $external: expr) => (
+    (
+        $(#[$attr:meta])* $vis:vis $tool:ident ::$NAME:ident, $Level:ident, $desc:expr,
+        $external:expr
+    ) => (
+        $(#[$attr])*
         $vis static $NAME: &$crate::lint::Lint = &$crate::lint::Lint {
             name: &concat!(stringify!($tool), "::", stringify!($NAME)),
             default_level: $crate::lint::$Level,
@@ -149,7 +157,7 @@ macro_rules! declare_tool_lint {
     );
 }
 
-/// Declare a static `LintArray` and return it as an expression.
+/// Declares a static `LintArray` and return it as an expression.
 #[macro_export]
 macro_rules! lint_array {
     ($( $lint:expr ),* ,) => { lint_array!( $($lint),* ) };
@@ -163,13 +171,34 @@ pub type LintArray = Vec<&'static Lint>;
 pub trait LintPass {
     fn name(&self) -> &'static str;
 
-    /// Get descriptions of the lints this `LintPass` object can emit.
+    /// Gets descriptions of the lints this `LintPass` object can emit.
     ///
     /// N.B., there is no enforcement that the object only emits lints it registered.
     /// And some `rustc` internal `LintPass`es register lints to be emitted by other
     /// parts of the compiler. If you want enforced access restrictions for your
     /// `Lint`, make it a private `static` item in its own module.
     fn get_lints(&self) -> LintArray;
+}
+
+/// Implements `LintPass for $name` with the given list of `Lint` statics.
+#[macro_export]
+macro_rules! impl_lint_pass {
+    ($name:ident => [$($lint:expr),* $(,)?]) => {
+        impl LintPass for $name {
+            fn name(&self) -> &'static str { stringify!($name) }
+            fn get_lints(&self) -> LintArray { $crate::lint_array!($($lint),*) }
+        }
+    };
+}
+
+/// Declares a type named `$name` which implements `LintPass`.
+/// To the right of `=>` a comma separated list of `Lint` statics is given.
+#[macro_export]
+macro_rules! declare_lint_pass {
+    ($(#[$m:meta])* $name:ident => [$($lint:expr),* $(,)?]) => {
+        $(#[$m])* #[derive(Copy, Clone)] pub struct $name;
+        $crate::impl_lint_pass!($name => [$($lint),*]);
+    };
 }
 
 #[macro_export]
@@ -181,8 +210,8 @@ macro_rules! late_lint_methods {
             fn check_name(a: Span, b: ast::Name);
             fn check_crate(a: &$hir hir::Crate);
             fn check_crate_post(a: &$hir hir::Crate);
-            fn check_mod(a: &$hir hir::Mod, b: Span, c: ast::NodeId);
-            fn check_mod_post(a: &$hir hir::Mod, b: Span, c: ast::NodeId);
+            fn check_mod(a: &$hir hir::Mod, b: Span, c: hir::HirId);
+            fn check_mod_post(a: &$hir hir::Mod, b: Span, c: hir::HirId);
             fn check_foreign_item(a: &$hir hir::ForeignItem);
             fn check_foreign_item_post(a: &$hir hir::ForeignItem);
             fn check_item(a: &$hir hir::Item);
@@ -205,13 +234,13 @@ macro_rules! late_lint_methods {
                 b: &$hir hir::FnDecl,
                 c: &$hir hir::Body,
                 d: Span,
-                e: ast::NodeId);
+                e: hir::HirId);
             fn check_fn_post(
                 a: hir::intravisit::FnKind<$hir>,
                 b: &$hir hir::FnDecl,
                 c: &$hir hir::Body,
                 d: Span,
-                e: ast::NodeId
+                e: hir::HirId
             );
             fn check_trait_item(a: &$hir hir::TraitItem);
             fn check_trait_item_post(a: &$hir hir::TraitItem);
@@ -221,13 +250,13 @@ macro_rules! late_lint_methods {
                 a: &$hir hir::VariantData,
                 b: ast::Name,
                 c: &$hir hir::Generics,
-                d: ast::NodeId
+                d: hir::HirId
             );
             fn check_struct_def_post(
                 a: &$hir hir::VariantData,
                 b: ast::Name,
                 c: &$hir hir::Generics,
-                d: ast::NodeId
+                d: hir::HirId
             );
             fn check_struct_field(a: &$hir hir::StructField);
             fn check_variant(a: &$hir hir::Variant, b: &$hir hir::Generics);
@@ -264,6 +293,9 @@ macro_rules! expand_lint_pass_methods {
 macro_rules! declare_late_lint_pass {
     ([], [$hir:tt], [$($methods:tt)*]) => (
         pub trait LateLintPass<'a, $hir>: LintPass {
+            fn fresh_late_pass(&self) -> LateLintPassObject {
+                panic!()
+            }
             expand_lint_pass_methods!(&LateContext<'a, $hir>, [$($methods)*]);
         }
     )
@@ -289,14 +321,14 @@ macro_rules! expand_combined_late_lint_pass_methods {
 
 #[macro_export]
 macro_rules! declare_combined_late_lint_pass {
-    ([$name:ident, [$($passes:ident: $constructor:expr,)*]], [$hir:tt], $methods:tt) => (
+    ([$v:vis $name:ident, [$($passes:ident: $constructor:expr,)*]], [$hir:tt], $methods:tt) => (
         #[allow(non_snake_case)]
-        struct $name {
+        $v struct $name {
             $($passes: $passes,)*
         }
 
         impl $name {
-            fn new() -> Self {
+            $v fn new() -> Self {
                 Self {
                     $($passes: $constructor,)*
                 }
@@ -339,7 +371,8 @@ macro_rules! early_lint_methods {
             fn check_block_post(a: &ast::Block);
             fn check_stmt(a: &ast::Stmt);
             fn check_arm(a: &ast::Arm);
-            fn check_pat(a: &ast::Pat, b: &mut bool); // FIXME: &mut bool looks just broken
+            fn check_pat(a: &ast::Pat);
+            fn check_pat_post(a: &ast::Pat);
             fn check_expr(a: &ast::Expr);
             fn check_expr_post(a: &ast::Expr);
             fn check_ty(a: &ast::Ty);
@@ -486,7 +519,7 @@ impl hash::Hash for LintId {
 }
 
 impl LintId {
-    /// Get the `LintId` for a `Lint`.
+    /// Gets the `LintId` for a `Lint`.
     pub fn of(lint: &'static Lint) -> LintId {
         LintId {
             lint,
@@ -497,7 +530,7 @@ impl LintId {
         self.lint.name
     }
 
-    /// Get the name of the lint.
+    /// Gets the name of the lint.
     pub fn to_string(&self) -> String {
         self.lint.name_lower()
     }
@@ -517,7 +550,7 @@ impl_stable_hash_for!(enum self::Level {
 });
 
 impl Level {
-    /// Convert a level to a lower-case string.
+    /// Converts a level to a lower-case string.
     pub fn as_str(self) -> &'static str {
         match self {
             Allow => "allow",
@@ -527,13 +560,24 @@ impl Level {
         }
     }
 
-    /// Convert a lower-case string to a level.
+    /// Converts a lower-case string to a level.
     pub fn from_str(x: &str) -> Option<Level> {
         match x {
             "allow" => Some(Allow),
             "warn" => Some(Warn),
             "deny" => Some(Deny),
             "forbid" => Some(Forbid),
+            _ => None,
+        }
+    }
+
+    /// Converts a symbol to a level.
+    pub fn from_symbol(x: Symbol) -> Option<Level> {
+        match x {
+            sym::allow => Some(Allow),
+            sym::warn => Some(Warn),
+            sym::deny => Some(Deny),
+            sym::forbid => Some(Forbid),
             _ => None,
         }
     }
@@ -562,6 +606,7 @@ impl_stable_hash_for!(enum self::LintSource {
 pub type LevelSource = (Level, LintSource);
 
 pub mod builtin;
+pub mod internal;
 mod context;
 mod levels;
 
@@ -678,9 +723,13 @@ pub fn struct_lint_level<'a>(sess: &'a Session,
             "this was previously accepted by the compiler but is being phased out; \
              it will become a hard error";
 
-        let explanation = if lint_id == LintId::of(::lint::builtin::UNSTABLE_NAME_COLLISIONS) {
+        let explanation = if lint_id == LintId::of(builtin::UNSTABLE_NAME_COLLISIONS) {
             "once this method is added to the standard library, \
              the ambiguity may cause an error or change in behavior!"
+                .to_owned()
+        } else if lint_id == LintId::of(builtin::MUTABLE_BORROW_RESERVATION_CONFLICT) {
+            "this borrowing pattern was not meant to be accepted, \
+             and may become a hard error in the future"
                 .to_owned()
         } else if let Some(edition) = future_incompatible.edition {
             format!("{} in the {} edition!", STANDARD_MESSAGE, edition)
@@ -712,9 +761,12 @@ pub fn struct_lint_level<'a>(sess: &'a Session,
     return err
 }
 
-fn lint_levels<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>, cnum: CrateNum)
-    -> Lrc<LintLevelMap>
-{
+pub fn maybe_lint_level_root(tcx: TyCtxt<'_>, id: hir::HirId) -> bool {
+    let attrs = tcx.hir().attrs(id);
+    attrs.iter().any(|attr| Level::from_symbol(attr.name_or_empty()).is_some())
+}
+
+fn lint_levels<'tcx>(tcx: TyCtxt<'tcx>, cnum: CrateNum) -> &'tcx LintLevelMap {
     assert_eq!(cnum, LOCAL_CRATE);
     let mut builder = LintLevelMapBuilder {
         levels: LintLevelSets::builder(tcx.sess),
@@ -722,57 +774,63 @@ fn lint_levels<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>, cnum: CrateNum)
     };
     let krate = tcx.hir().krate();
 
-    builder.with_lint_attrs(ast::CRATE_NODE_ID, &krate.attrs, |builder| {
-        intravisit::walk_crate(builder, krate);
-    });
+    let push = builder.levels.push(&krate.attrs);
+    builder.levels.register_id(hir::CRATE_HIR_ID);
+    for macro_def in &krate.exported_macros {
+       builder.levels.register_id(macro_def.hir_id);
+    }
+    intravisit::walk_crate(&mut builder, krate);
+    builder.levels.pop(push);
 
-    Lrc::new(builder.levels.build_map())
+    tcx.arena.alloc(builder.levels.build_map())
 }
 
-struct LintLevelMapBuilder<'a, 'tcx: 'a> {
+struct LintLevelMapBuilder<'tcx> {
     levels: levels::LintLevelsBuilder<'tcx>,
-    tcx: TyCtxt<'a, 'tcx, 'tcx>,
+    tcx: TyCtxt<'tcx>,
 }
 
-impl<'a, 'tcx> LintLevelMapBuilder<'a, 'tcx> {
+impl LintLevelMapBuilder<'tcx> {
     fn with_lint_attrs<F>(&mut self,
-                          id: ast::NodeId,
+                          id: hir::HirId,
                           attrs: &[ast::Attribute],
                           f: F)
         where F: FnOnce(&mut Self)
     {
         let push = self.levels.push(attrs);
-        self.levels.register_id(self.tcx.hir().definitions().node_to_hir_id(id));
+        if push.changed {
+            self.levels.register_id(id);
+        }
         f(self);
         self.levels.pop(push);
     }
 }
 
-impl<'a, 'tcx> intravisit::Visitor<'tcx> for LintLevelMapBuilder<'a, 'tcx> {
+impl intravisit::Visitor<'tcx> for LintLevelMapBuilder<'tcx> {
     fn nested_visit_map<'this>(&'this mut self) -> intravisit::NestedVisitorMap<'this, 'tcx> {
         intravisit::NestedVisitorMap::All(&self.tcx.hir())
     }
 
     fn visit_item(&mut self, it: &'tcx hir::Item) {
-        self.with_lint_attrs(it.id, &it.attrs, |builder| {
+        self.with_lint_attrs(it.hir_id, &it.attrs, |builder| {
             intravisit::walk_item(builder, it);
         });
     }
 
     fn visit_foreign_item(&mut self, it: &'tcx hir::ForeignItem) {
-        self.with_lint_attrs(it.id, &it.attrs, |builder| {
+        self.with_lint_attrs(it.hir_id, &it.attrs, |builder| {
             intravisit::walk_foreign_item(builder, it);
         })
     }
 
     fn visit_expr(&mut self, e: &'tcx hir::Expr) {
-        self.with_lint_attrs(e.id, &e.attrs, |builder| {
+        self.with_lint_attrs(e.hir_id, &e.attrs, |builder| {
             intravisit::walk_expr(builder, e);
         })
     }
 
     fn visit_struct_field(&mut self, s: &'tcx hir::StructField) {
-        self.with_lint_attrs(s.id, &s.attrs, |builder| {
+        self.with_lint_attrs(s.hir_id, &s.attrs, |builder| {
             intravisit::walk_struct_field(builder, s);
         })
     }
@@ -780,26 +838,32 @@ impl<'a, 'tcx> intravisit::Visitor<'tcx> for LintLevelMapBuilder<'a, 'tcx> {
     fn visit_variant(&mut self,
                      v: &'tcx hir::Variant,
                      g: &'tcx hir::Generics,
-                     item_id: ast::NodeId) {
-        self.with_lint_attrs(v.node.data.id(), &v.node.attrs, |builder| {
+                     item_id: hir::HirId) {
+        self.with_lint_attrs(v.node.id, &v.node.attrs, |builder| {
             intravisit::walk_variant(builder, v, g, item_id);
         })
     }
 
     fn visit_local(&mut self, l: &'tcx hir::Local) {
-        self.with_lint_attrs(l.id, &l.attrs, |builder| {
+        self.with_lint_attrs(l.hir_id, &l.attrs, |builder| {
             intravisit::walk_local(builder, l);
         })
     }
 
+    fn visit_arm(&mut self, a: &'tcx hir::Arm) {
+        self.with_lint_attrs(a.hir_id, &a.attrs, |builder| {
+            intravisit::walk_arm(builder, a);
+        })
+    }
+
     fn visit_trait_item(&mut self, trait_item: &'tcx hir::TraitItem) {
-        self.with_lint_attrs(trait_item.id, &trait_item.attrs, |builder| {
+        self.with_lint_attrs(trait_item.hir_id, &trait_item.attrs, |builder| {
             intravisit::walk_trait_item(builder, trait_item);
         });
     }
 
     fn visit_impl_item(&mut self, impl_item: &'tcx hir::ImplItem) {
-        self.with_lint_attrs(impl_item.id, &impl_item.attrs, |builder| {
+        self.with_lint_attrs(impl_item.hir_id, &impl_item.attrs, |builder| {
             intravisit::walk_impl_item(builder, impl_item);
         });
     }
@@ -811,29 +875,45 @@ pub fn provide(providers: &mut Providers<'_>) {
 
 /// Returns whether `span` originates in a foreign crate's external macro.
 ///
-/// This is used to test whether a lint should be entirely aborted above.
+/// This is used to test whether a lint should not even begin to figure out whether it should
+/// be reported on the current node.
 pub fn in_external_macro(sess: &Session, span: Span) -> bool {
-    let info = match span.ctxt().outer().expn_info() {
+    let info = match span.ctxt().outer_expn_info() {
         Some(info) => info,
         // no ExpnInfo means this span doesn't come from a macro
         None => return false,
     };
 
     match info.format {
-        ExpnFormat::MacroAttribute(..) => return true, // definitely a plugin
-        ExpnFormat::CompilerDesugaring(_) => return true, // well, it's "external"
-        ExpnFormat::MacroBang(..) => {} // check below
-    }
+        ExpnFormat::MacroAttribute(..) => true, // definitely a plugin
+        ExpnFormat::CompilerDesugaring(CompilerDesugaringKind::ForLoop) => false,
+        ExpnFormat::CompilerDesugaring(_) => true, // well, it's "external"
+        ExpnFormat::MacroBang(..) => {
+            let def_site = match info.def_site {
+                Some(span) => span,
+                // no span for the def_site means it's an external macro
+                None => return true,
+            };
 
-    let def_site = match info.def_site {
-        Some(span) => span,
-        // no span for the def_site means it's an external macro
-        None => return true,
+            match sess.source_map().span_to_snippet(def_site) {
+                Ok(code) => !code.starts_with("macro_rules"),
+                // no snippet = external macro or compiler-builtin expansion
+                Err(_) => true,
+            }
+        }
+    }
+}
+
+/// Returns whether `span` originates in a derive macro's expansion
+pub fn in_derive_expansion(span: Span) -> bool {
+    let info = match span.ctxt().outer_expn_info() {
+        Some(info) => info,
+        // no ExpnInfo means this span doesn't come from a macro
+        None => return false,
     };
 
-    match sess.source_map().span_to_snippet(def_site) {
-        Ok(code) => !code.starts_with("macro_rules"),
-        // no snippet = external macro or compiler-builtin expansion
-        Err(_) => true,
+    match info.format {
+        ExpnFormat::MacroAttribute(symbol) => symbol.as_str().starts_with("derive("),
+        _ => false,
     }
 }

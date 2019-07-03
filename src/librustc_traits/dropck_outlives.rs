@@ -4,13 +4,12 @@ use rustc::traits::query::dropck_outlives::{DropckOutlivesResult, DtorckConstrai
 use rustc::traits::query::{CanonicalTyGoal, NoSolution};
 use rustc::traits::{TraitEngine, Normalized, ObligationCause, TraitEngineExt};
 use rustc::ty::query::Providers;
-use rustc::ty::subst::{Subst, Substs};
+use rustc::ty::subst::{Subst, InternalSubsts};
 use rustc::ty::{self, ParamEnvAnd, Ty, TyCtxt};
 use rustc::util::nodemap::FxHashSet;
-use rustc_data_structures::sync::Lrc;
 use syntax::source_map::{Span, DUMMY_SP};
 
-crate fn provide(p: &mut Providers) {
+crate fn provide(p: &mut Providers<'_>) {
     *p = Providers {
         dropck_outlives,
         adt_dtorck_constraint,
@@ -19,9 +18,9 @@ crate fn provide(p: &mut Providers) {
 }
 
 fn dropck_outlives<'tcx>(
-    tcx: TyCtxt<'_, 'tcx, 'tcx>,
+    tcx: TyCtxt<'tcx>,
     canonical_goal: CanonicalTyGoal<'tcx>,
-) -> Result<Lrc<Canonical<'tcx, QueryResponse<'tcx, DropckOutlivesResult<'tcx>>>>, NoSolution> {
+) -> Result<&'tcx Canonical<'tcx, QueryResponse<'tcx, DropckOutlivesResult<'tcx>>>, NoSolution> {
     debug!("dropck_outlives(goal={:#?})", canonical_goal);
 
     tcx.infer_ctxt().enter_with_canonical(
@@ -145,10 +144,10 @@ fn dropck_outlives<'tcx>(
     )
 }
 
-/// Return a set of constraints that needs to be satisfied in
+/// Returns a set of constraints that needs to be satisfied in
 /// order for `ty` to be valid for destruction.
-fn dtorck_constraint_for_ty<'a, 'gcx, 'tcx>(
-    tcx: TyCtxt<'a, 'gcx, 'tcx>,
+fn dtorck_constraint_for_ty<'tcx>(
+    tcx: TyCtxt<'tcx>,
     span: Span,
     for_ty: Ty<'tcx>,
     depth: usize,
@@ -191,7 +190,7 @@ fn dtorck_constraint_for_ty<'a, 'gcx, 'tcx>(
         }
 
         ty::Tuple(tys) => tys.iter()
-            .map(|ty| dtorck_constraint_for_ty(tcx, span, for_ty, depth + 1, ty))
+            .map(|ty| dtorck_constraint_for_ty(tcx, span, for_ty, depth + 1, ty.expect_ty()))
             .collect(),
 
         ty::Closure(def_id, substs) => substs
@@ -280,8 +279,8 @@ fn dtorck_constraint_for_ty<'a, 'gcx, 'tcx>(
 }
 
 /// Calculates the dtorck constraint for a type.
-crate fn adt_dtorck_constraint<'a, 'tcx>(
-    tcx: TyCtxt<'a, 'tcx, 'tcx>,
+crate fn adt_dtorck_constraint<'tcx>(
+    tcx: TyCtxt<'tcx>,
     def_id: DefId,
 ) -> Result<DtorckConstraint<'tcx>, NoSolution> {
     let def = tcx.adt_def(def_id);
@@ -291,7 +290,7 @@ crate fn adt_dtorck_constraint<'a, 'tcx>(
     if def.is_phantom_data() {
         // The first generic parameter here is guaranteed to be a type because it's
         // `PhantomData`.
-        let substs = Substs::identity_for_item(tcx, def_id);
+        let substs = InternalSubsts::identity_for_item(tcx, def_id);
         assert_eq!(substs.len(), 1);
         let result = DtorckConstraint {
             outlives: vec![],
@@ -305,7 +304,7 @@ crate fn adt_dtorck_constraint<'a, 'tcx>(
     let mut result = def.all_fields()
         .map(|field| tcx.type_of(field.did))
         .map(|fty| dtorck_constraint_for_ty(tcx, span, fty, 0, fty))
-        .collect::<Result<DtorckConstraint, NoSolution>>()?;
+        .collect::<Result<DtorckConstraint<'_>, NoSolution>>()?;
     result.outlives.extend(tcx.destructor_constraints(def));
     dedup_dtorck_constraint(&mut result);
 

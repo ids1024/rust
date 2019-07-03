@@ -26,27 +26,32 @@
 //!
 //! This API is completely unstable and subject to change.
 
-#![doc(html_logo_url = "https://www.rust-lang.org/logos/rust-logo-128x128-blk-v2.png",
-       html_favicon_url = "https://doc.rust-lang.org/favicon.ico",
-       html_root_url = "https://doc.rust-lang.org/nightly/")]
+#![doc(html_root_url = "https://doc.rust-lang.org/nightly/")]
 
+#![deny(rust_2018_idioms)]
+#![deny(internal)]
+#![deny(unused_lifetimes)]
+#![allow(explicit_outlives_requirements)]
+
+#![feature(arbitrary_self_types)]
 #![feature(box_patterns)]
 #![feature(box_syntax)]
 #![feature(core_intrinsics)]
 #![feature(drain_filter)]
+#![feature(inner_deref)]
 #![cfg_attr(windows, feature(libc))]
 #![feature(never_type)]
 #![feature(exhaustive_patterns)]
+#![feature(overlapping_marker_traits)]
 #![feature(extern_types)]
 #![feature(nll)]
 #![feature(non_exhaustive)]
 #![feature(proc_macro_internals)]
 #![feature(optin_builtin_traits)]
-#![feature(refcell_replace_swap)]
+#![feature(range_is_empty)]
 #![feature(rustc_diagnostic_macros)]
 #![feature(rustc_attrs)]
 #![feature(slice_patterns)]
-#![feature(slice_sort_by_cached_key)]
 #![feature(specialization)]
 #![feature(unboxed_closures)]
 #![feature(thread_local)]
@@ -59,45 +64,30 @@
 #![feature(test)]
 #![feature(in_band_lifetimes)]
 #![feature(crate_visibility_modifier)]
+#![feature(proc_macro_hygiene)]
+#![feature(log_syntax)]
 
 #![recursion_limit="512"]
 
-#![warn(elided_lifetimes_in_paths)]
-
-extern crate arena;
 #[macro_use] extern crate bitflags;
-extern crate core;
-extern crate fmt_macros;
 extern crate getopts;
-extern crate graphviz;
 #[macro_use] extern crate lazy_static;
 #[macro_use] extern crate scoped_tls;
 #[cfg(windows)]
 extern crate libc;
-extern crate polonius_engine;
-extern crate rustc_target;
+#[macro_use] extern crate rustc_macros;
 #[macro_use] extern crate rustc_data_structures;
-extern crate serialize;
-extern crate parking_lot;
-extern crate rustc_errors as errors;
-extern crate rustc_rayon as rayon;
-extern crate rustc_rayon_core as rayon_core;
+
 #[macro_use] extern crate log;
 #[macro_use] extern crate syntax;
-extern crate syntax_pos;
-extern crate jobserver;
-extern crate proc_macro;
-extern crate chalk_engine;
-extern crate rustc_fs_util;
 
-extern crate serialize as rustc_serialize; // used by deriving
+// FIXME: This import is used by deriving `RustcDecodable` and `RustcEncodable`. Removing this
+// results in a bunch of "failed to resolve" errors. Hopefully, the compiler moves to serde or
+// something, and we can get rid of this.
+#[allow(rust_2018_idioms)]
+extern crate serialize as rustc_serialize;
 
-extern crate rustc_apfloat;
-extern crate byteorder;
-extern crate backtrace;
-
-#[macro_use]
-extern crate smallvec;
+#[macro_use] extern crate smallvec;
 
 // Note that librustc doesn't actually depend on these crates, see the note in
 // `Cargo.toml` for this crate about why these are here.
@@ -111,8 +101,13 @@ mod macros;
 
 // N.B., this module needs to be declared first so diagnostics are
 // registered before they are used.
-pub mod diagnostics;
+pub mod error_codes;
 
+#[macro_use]
+pub mod query;
+
+#[macro_use]
+pub mod arena;
 pub mod cfg;
 pub mod dep_graph;
 pub mod hir;
@@ -152,21 +147,13 @@ pub mod ty;
 pub mod util {
     pub mod captures;
     pub mod common;
-    pub mod ppaux;
     pub mod nodemap;
-    pub mod time_graph;
     pub mod profiling;
     pub mod bug;
 }
 
-// A private module so that macro-expanded idents like
-// `::rustc::lint::Lint` will also work in `rustc` itself.
-//
-// `libstd` uses the same trick.
-#[doc(hidden)]
-mod rustc {
-    pub use lint;
-}
+// Allows macros to refer to this crate as `::rustc`
+extern crate self as rustc;
 
 // FIXME(#27438): right now the unit tests of librustc don't refer to any actual
 //                functions generated in librustc_data_structures (all

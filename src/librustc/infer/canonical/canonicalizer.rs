@@ -5,21 +5,23 @@
 //!
 //! [c]: https://rust-lang.github.io/rustc-guide/traits/canonicalization.html
 
-use infer::canonical::{
+use crate::infer::canonical::{
     Canonical, CanonicalTyVarKind, CanonicalVarInfo, CanonicalVarKind, Canonicalized,
     OriginalQueryValues,
 };
-use infer::InferCtxt;
+use crate::infer::InferCtxt;
+use crate::mir::interpret::ConstValue;
 use std::sync::atomic::Ordering;
-use ty::fold::{TypeFoldable, TypeFolder};
-use ty::subst::Kind;
-use ty::{self, BoundVar, Lift, List, Ty, TyCtxt, TypeFlags};
+use crate::ty::fold::{TypeFoldable, TypeFolder};
+use crate::ty::subst::Kind;
+use crate::ty::{self, BoundVar, InferConst, Lift, List, Ty, TyCtxt, TypeFlags};
+use crate::ty::flags::FlagComputation;
 
 use rustc_data_structures::fx::FxHashMap;
 use rustc_data_structures::indexed_vec::Idx;
 use smallvec::SmallVec;
 
-impl<'cx, 'gcx, 'tcx> InferCtxt<'cx, 'gcx, 'tcx> {
+impl<'cx, 'tcx> InferCtxt<'cx, 'tcx> {
     /// Canonicalizes a query value `V`. When we canonicalize a query,
     /// we not only canonicalize unbound inference variables, but we
     /// *also* replace all free regions whatsoever. So for example a
@@ -39,9 +41,9 @@ impl<'cx, 'gcx, 'tcx> InferCtxt<'cx, 'gcx, 'tcx> {
         &self,
         value: &V,
         query_state: &mut OriginalQueryValues<'tcx>,
-    ) -> Canonicalized<'gcx, V>
+    ) -> Canonicalized<'tcx, V>
     where
-        V: TypeFoldable<'tcx> + Lift<'gcx>,
+        V: TypeFoldable<'tcx> + Lift<'tcx>,
     {
         self.tcx
             .sess
@@ -83,9 +85,9 @@ impl<'cx, 'gcx, 'tcx> InferCtxt<'cx, 'gcx, 'tcx> {
     /// out the [chapter in the rustc guide][c].
     ///
     /// [c]: https://rust-lang.github.io/rustc-guide/traits/canonicalization.html#canonicalizing-the-query-result
-    pub fn canonicalize_response<V>(&self, value: &V) -> Canonicalized<'gcx, V>
+    pub fn canonicalize_response<V>(&self, value: &V) -> Canonicalized<'tcx, V>
     where
-        V: TypeFoldable<'tcx> + Lift<'gcx>,
+        V: TypeFoldable<'tcx> + Lift<'tcx>,
     {
         let mut query_state = OriginalQueryValues::default();
         Canonicalizer::canonicalize(
@@ -97,9 +99,9 @@ impl<'cx, 'gcx, 'tcx> InferCtxt<'cx, 'gcx, 'tcx> {
         )
     }
 
-    pub fn canonicalize_user_type_annotation<V>(&self, value: &V) -> Canonicalized<'gcx, V>
+    pub fn canonicalize_user_type_annotation<V>(&self, value: &V) -> Canonicalized<'tcx, V>
     where
-        V: TypeFoldable<'tcx> + Lift<'gcx>,
+        V: TypeFoldable<'tcx> + Lift<'tcx>,
     {
         let mut query_state = OriginalQueryValues::default();
         Canonicalizer::canonicalize(
@@ -112,21 +114,25 @@ impl<'cx, 'gcx, 'tcx> InferCtxt<'cx, 'gcx, 'tcx> {
     }
 
     /// A hacky variant of `canonicalize_query` that does not
-    /// canonicalize `'static`.  Unfortunately, the existing leak
-    /// check treaks `'static` differently in some cases (see also
+    /// canonicalize `'static`. Unfortunately, the existing leak
+    /// check treats `'static` differently in some cases (see also
     /// #33684), so if we are performing an operation that may need to
     /// prove "leak-check" related things, we leave `'static`
     /// alone.
     ///
-    /// FIXME(#48536) -- once we have universes, we can remove this and just use
-    /// `canonicalize_query`.
+    /// `'static` is also special cased when winnowing candidates when
+    /// selecting implementation candidates, so we also have to leave `'static`
+    /// alone for queries that do selection.
+    //
+    // FIXME(#48536): once the above issues are resolved, we can remove this
+    // and just use `canonicalize_query`.
     pub fn canonicalize_hr_query_hack<V>(
         &self,
         value: &V,
         query_state: &mut OriginalQueryValues<'tcx>,
-    ) -> Canonicalized<'gcx, V>
+    ) -> Canonicalized<'tcx, V>
     where
-        V: TypeFoldable<'tcx> + Lift<'gcx>,
+        V: TypeFoldable<'tcx> + Lift<'tcx>,
     {
         self.tcx
             .sess
@@ -154,7 +160,7 @@ impl<'cx, 'gcx, 'tcx> InferCtxt<'cx, 'gcx, 'tcx> {
 trait CanonicalizeRegionMode {
     fn canonicalize_free_region(
         &self,
-        canonicalizer: &mut Canonicalizer<'_, '_, 'tcx>,
+        canonicalizer: &mut Canonicalizer<'_, 'tcx>,
         r: ty::Region<'tcx>,
     ) -> ty::Region<'tcx>;
 
@@ -166,7 +172,7 @@ struct CanonicalizeQueryResponse;
 impl CanonicalizeRegionMode for CanonicalizeQueryResponse {
     fn canonicalize_free_region(
         &self,
-        canonicalizer: &mut Canonicalizer<'_, '_, 'tcx>,
+        canonicalizer: &mut Canonicalizer<'_, 'tcx>,
         r: ty::Region<'tcx>,
     ) -> ty::Region<'tcx> {
         match r {
@@ -191,7 +197,16 @@ impl CanonicalizeRegionMode for CanonicalizeQueryResponse {
                 // response should be executing in a fully
                 // canonicalized environment, so there shouldn't be
                 // any other region names it can come up.
-                bug!("unexpected region in query response: `{:?}`", r)
+                //
+                // rust-lang/rust#57464: `impl Trait` can leak local
+                // scopes (in manner violating typeck). Therefore, use
+                // `delay_span_bug` to allow type error over an ICE.
+                ty::tls::with_context(|c| {
+                    c.tcx.sess.delay_span_bug(
+                        syntax_pos::DUMMY_SP,
+                        &format!("unexpected region in query response: `{:?}`", r));
+                });
+                r
             }
         }
     }
@@ -206,7 +221,7 @@ struct CanonicalizeUserTypeAnnotation;
 impl CanonicalizeRegionMode for CanonicalizeUserTypeAnnotation {
     fn canonicalize_free_region(
         &self,
-        canonicalizer: &mut Canonicalizer<'_, '_, 'tcx>,
+        canonicalizer: &mut Canonicalizer<'_, 'tcx>,
         r: ty::Region<'tcx>,
     ) -> ty::Region<'tcx> {
         match r {
@@ -229,7 +244,7 @@ struct CanonicalizeAllFreeRegions;
 impl CanonicalizeRegionMode for CanonicalizeAllFreeRegions {
     fn canonicalize_free_region(
         &self,
-        canonicalizer: &mut Canonicalizer<'_, '_, 'tcx>,
+        canonicalizer: &mut Canonicalizer<'_, 'tcx>,
         r: ty::Region<'tcx>,
     ) -> ty::Region<'tcx> {
         canonicalizer.canonical_var_for_region_in_root_universe(r)
@@ -245,7 +260,7 @@ struct CanonicalizeFreeRegionsOtherThanStatic;
 impl CanonicalizeRegionMode for CanonicalizeFreeRegionsOtherThanStatic {
     fn canonicalize_free_region(
         &self,
-        canonicalizer: &mut Canonicalizer<'_, '_, 'tcx>,
+        canonicalizer: &mut Canonicalizer<'_, 'tcx>,
         r: ty::Region<'tcx>,
     ) -> ty::Region<'tcx> {
         if let ty::ReStatic = r {
@@ -260,9 +275,9 @@ impl CanonicalizeRegionMode for CanonicalizeFreeRegionsOtherThanStatic {
     }
 }
 
-struct Canonicalizer<'cx, 'gcx: 'tcx, 'tcx: 'cx> {
-    infcx: Option<&'cx InferCtxt<'cx, 'gcx, 'tcx>>,
-    tcx: TyCtxt<'cx, 'gcx, 'tcx>,
+struct Canonicalizer<'cx, 'tcx> {
+    infcx: Option<&'cx InferCtxt<'cx, 'tcx>>,
+    tcx: TyCtxt<'tcx>,
     variables: SmallVec<[CanonicalVarInfo; 8]>,
     query_state: &'cx mut OriginalQueryValues<'tcx>,
     // Note that indices is only used once `var_values` is big enough to be
@@ -274,8 +289,8 @@ struct Canonicalizer<'cx, 'gcx: 'tcx, 'tcx: 'cx> {
     binder_index: ty::DebruijnIndex,
 }
 
-impl<'cx, 'gcx, 'tcx> TypeFolder<'gcx, 'tcx> for Canonicalizer<'cx, 'gcx, 'tcx> {
-    fn tcx<'b>(&'b self) -> TyCtxt<'b, 'gcx, 'tcx> {
+impl<'cx, 'tcx> TypeFolder<'tcx> for Canonicalizer<'cx, 'tcx> {
+    fn tcx<'b>(&'b self) -> TyCtxt<'tcx> {
         self.tcx
     }
 
@@ -423,29 +438,86 @@ impl<'cx, 'gcx, 'tcx> TypeFolder<'gcx, 'tcx> for Canonicalizer<'cx, 'gcx, 'tcx> 
             }
         }
     }
+
+    fn fold_const(&mut self, ct: &'tcx ty::Const<'tcx>) -> &'tcx ty::Const<'tcx> {
+        match ct.val {
+            ConstValue::Infer(InferConst::Var(vid)) => {
+                debug!("canonical: const var found with vid {:?}", vid);
+                match self.infcx.unwrap().probe_const_var(vid) {
+                    Ok(c) => {
+                        debug!("(resolved to {:?})", c);
+                        return self.fold_const(c);
+                    }
+
+                    // `ConstVar(vid)` is unresolved, track its universe index in the
+                    // canonicalized result
+                    Err(mut ui) => {
+                        if !self.infcx.unwrap().tcx.sess.opts.debugging_opts.chalk {
+                            // FIXME: perf problem described in #55921.
+                            ui = ty::UniverseIndex::ROOT;
+                        }
+                        return self.canonicalize_const_var(
+                            CanonicalVarInfo {
+                                kind: CanonicalVarKind::Const(ui),
+                            },
+                            ct,
+                        );
+                    }
+                }
+            }
+            ConstValue::Infer(InferConst::Fresh(_)) => {
+                bug!("encountered a fresh const during canonicalization")
+            }
+            ConstValue::Infer(InferConst::Canonical(debruijn, _)) => {
+                if debruijn >= self.binder_index {
+                    bug!("escaping bound type during canonicalization")
+                } else {
+                    return ct;
+                }
+            }
+            ConstValue::Placeholder(placeholder) => {
+                return self.canonicalize_const_var(
+                    CanonicalVarInfo {
+                        kind: CanonicalVarKind::PlaceholderConst(placeholder),
+                    },
+                    ct,
+                );
+            }
+            _ => {}
+        }
+
+        let flags = FlagComputation::for_const(ct);
+        if flags.intersects(self.needs_canonical_flags) {
+            ct.super_fold_with(self)
+        } else {
+            ct
+        }
+    }
 }
 
-impl<'cx, 'gcx, 'tcx> Canonicalizer<'cx, 'gcx, 'tcx> {
+impl<'cx, 'tcx> Canonicalizer<'cx, 'tcx> {
     /// The main `canonicalize` method, shared impl of
     /// `canonicalize_query` and `canonicalize_response`.
     fn canonicalize<V>(
         value: &V,
-        infcx: Option<&InferCtxt<'_, 'gcx, 'tcx>>,
-        tcx: TyCtxt<'_, 'gcx, 'tcx>,
+        infcx: Option<&InferCtxt<'_, 'tcx>>,
+        tcx: TyCtxt<'tcx>,
         canonicalize_region_mode: &dyn CanonicalizeRegionMode,
         query_state: &mut OriginalQueryValues<'tcx>,
-    ) -> Canonicalized<'gcx, V>
+    ) -> Canonicalized<'tcx, V>
     where
-        V: TypeFoldable<'tcx> + Lift<'gcx>,
+        V: TypeFoldable<'tcx> + Lift<'tcx>,
     {
         let needs_canonical_flags = if canonicalize_region_mode.any() {
             TypeFlags::KEEP_IN_LOCAL_TCX |
             TypeFlags::HAS_FREE_REGIONS | // `HAS_RE_PLACEHOLDER` implies `HAS_FREE_REGIONS`
-            TypeFlags::HAS_TY_PLACEHOLDER
+            TypeFlags::HAS_TY_PLACEHOLDER |
+            TypeFlags::HAS_CT_PLACEHOLDER
         } else {
             TypeFlags::KEEP_IN_LOCAL_TCX |
             TypeFlags::HAS_RE_PLACEHOLDER |
-            TypeFlags::HAS_TY_PLACEHOLDER
+            TypeFlags::HAS_TY_PLACEHOLDER |
+            TypeFlags::HAS_CT_PLACEHOLDER
         };
 
         let gcx = tcx.global_tcx();
@@ -595,7 +667,7 @@ impl<'cx, 'gcx, 'tcx> Canonicalizer<'cx, 'gcx, 'tcx> {
             .var_universe(vid)
     }
 
-    /// Create a canonical variable (with the given `info`)
+    /// Creates a canonical variable (with the given `info`)
     /// representing the region `r`; return a region referencing it.
     fn canonical_var_for_region(
         &mut self,
@@ -622,6 +694,30 @@ impl<'cx, 'gcx, 'tcx> Canonicalizer<'cx, 'gcx, 'tcx> {
         } else {
             let var = self.canonical_var(info, ty_var.into());
             self.tcx().mk_ty(ty::Bound(self.binder_index, var.into()))
+        }
+    }
+
+    /// Given a type variable `const_var` of the given kind, first check
+    /// if `const_var` is bound to anything; if so, canonicalize
+    /// *that*. Otherwise, create a new canonical variable for
+    /// `const_var`.
+    fn canonicalize_const_var(
+        &mut self,
+        info: CanonicalVarInfo,
+        const_var: &'tcx ty::Const<'tcx>
+    ) -> &'tcx ty::Const<'tcx> {
+        let infcx = self.infcx.expect("encountered const-var without infcx");
+        let bound_to = infcx.resolve_const_var(const_var);
+        if bound_to != const_var {
+            self.fold_const(bound_to)
+        } else {
+            let var = self.canonical_var(info, const_var.into());
+            self.tcx().mk_const(
+                ty::Const {
+                    val: ConstValue::Infer(InferConst::Canonical(self.binder_index, var.into())),
+                    ty: const_var.ty,
+                }
+            )
         }
     }
 }

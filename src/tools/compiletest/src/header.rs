@@ -4,15 +4,17 @@ use std::io::prelude::*;
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
 
-use common::{self, CompareMode, Config, Mode};
-use util;
+use log::*;
 
-use extract_gdb_version;
+use crate::common::{self, CompareMode, Config, Mode};
+use crate::util;
+
+use crate::extract_gdb_version;
 
 /// Whether to ignore the test.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Ignore {
-    /// Run it.
+    /// Runs it.
     Run,
     /// Ignore it totally.
     Ignore,
@@ -55,9 +57,9 @@ enum ParsedNameDirective {
     NoMatch,
     /// Match.
     Match,
-    /// Mode was DebugInfoBoth and this matched gdb.
+    /// Mode was DebugInfoGdbLldb and this matched gdb.
     MatchGdb,
-    /// Mode was DebugInfoBoth and this matched lldb.
+    /// Mode was DebugInfoGdbLldb and this matched lldb.
     MatchLldb,
 }
 
@@ -79,14 +81,21 @@ impl EarlyProps {
             revisions: vec![],
         };
 
-        if config.mode == common::DebugInfoBoth {
+        if config.mode == common::DebugInfoGdbLldb {
             if config.lldb_python_dir.is_none() {
                 props.ignore = props.ignore.no_lldb();
             }
             if config.gdb_version.is_none() {
                 props.ignore = props.ignore.no_gdb();
             }
+        } else if config.mode == common::DebugInfoCdb {
+            if config.cdb.is_none() {
+                props.ignore = Ignore::Ignore;
+            }
         }
+
+        let rustc_has_profiler_support = env::var_os("RUSTC_PROFILER_SUPPORT").is_some();
+        let rustc_has_sanitizer_support = env::var_os("RUSTC_SANITIZER_SUPPORT").is_some();
 
         iter_header(testfile, None, &mut |ln| {
             // we should check if any only-<platform> exists and if it exists
@@ -111,14 +120,29 @@ impl EarlyProps {
                 if ignore_llvm(config, ln) {
                     props.ignore = Ignore::Ignore;
                 }
+
+                if config.run_clang_based_tests_with.is_none() &&
+                   config.parse_needs_matching_clang(ln) {
+                    props.ignore = Ignore::Ignore;
+                }
+
+                if !rustc_has_profiler_support &&
+                   config.parse_needs_profiler_support(ln) {
+                    props.ignore = Ignore::Ignore;
+                }
+
+                if !rustc_has_sanitizer_support &&
+                   config.parse_needs_sanitizer_support(ln) {
+                    props.ignore = Ignore::Ignore;
+                }
             }
 
-            if (config.mode == common::DebugInfoGdb || config.mode == common::DebugInfoBoth) &&
+            if (config.mode == common::DebugInfoGdb || config.mode == common::DebugInfoGdbLldb) &&
                 props.ignore.can_run_gdb() && ignore_gdb(config, ln) {
                 props.ignore = props.ignore.no_gdb();
             }
 
-            if (config.mode == common::DebugInfoLldb || config.mode == common::DebugInfoBoth) &&
+            if (config.mode == common::DebugInfoLldb || config.mode == common::DebugInfoGdbLldb) &&
                 props.ignore.can_run_lldb() && ignore_lldb(config, ln) {
                 props.ignore = props.ignore.no_lldb();
             }
@@ -281,8 +305,15 @@ pub struct TestProps {
     // directory as the test, but for backwards compatibility reasons
     // we also check the auxiliary directory)
     pub aux_builds: Vec<String>,
+    // A list of crates to pass '--extern-private name:PATH' flags for
+    // This should be a subset of 'aux_build'
+    // FIXME: Replace this with a better solution: https://github.com/rust-lang/rust/pull/54020
+    pub extern_private: Vec<String>,
     // Environment settings to use for compiling
     pub rustc_env: Vec<(String, String)>,
+    // Environment variables to unset prior to compiling.
+    // Variables are unset before applying 'rustc_env'.
+    pub unset_rustc_env: Vec<String>,
     // Environment settings to use during execution
     pub exec_env: Vec<(String, String)>,
     // Lines to check if they appear in the expected debugger output
@@ -298,6 +329,10 @@ pub struct TestProps {
     // For UI tests, allows compiler to generate arbitrary output to stderr
     pub dont_check_compiler_stderr: bool,
     // Don't force a --crate-type=dylib flag on the command line
+    //
+    // Set this for example if you have an auxiliary test file that contains
+    // a proc-macro and needs `#![crate_type = "proc-macro"]`. This ensures
+    // that the aux file is compiled as a `proc-macro` and not as a `dylib`.
     pub no_prefer_dynamic: bool,
     // Run --pretty expanded when running pretty printing tests
     pub pretty_expanded: bool,
@@ -328,8 +363,12 @@ pub struct TestProps {
     pub normalize_stdout: Vec<(String, String)>,
     pub normalize_stderr: Vec<(String, String)>,
     pub failure_status: i32,
+    // Whether or not `rustfix` should apply the `CodeSuggestion`s of this test and compile the
+    // resulting Rust code.
     pub run_rustfix: bool,
+    // If true, `rustfix` will only apply `MachineApplicable` suggestions.
     pub rustfix_only_machine_applicable: bool,
+    pub assembly_output: Option<String>,
 }
 
 impl TestProps {
@@ -340,8 +379,10 @@ impl TestProps {
             run_flags: None,
             pp_exact: None,
             aux_builds: vec![],
+            extern_private: vec![],
             revisions: vec![],
             rustc_env: vec![],
+            unset_rustc_env: vec![],
             exec_env: vec![],
             check_lines: vec![],
             build_aux_docs: false,
@@ -365,6 +406,7 @@ impl TestProps {
             failure_status: -1,
             run_rustfix: false,
             rustfix_only_machine_applicable: false,
+            assembly_output: None,
         }
     }
 
@@ -384,7 +426,7 @@ impl TestProps {
         props
     }
 
-    /// Load properties from `testfile` into `props`. If a property is
+    /// Loads properties from `testfile` into `props`. If a property is
     /// tied to a particular revision `foo` (indicated by writing
     /// `//[foo]`), then the property is ignored unless `cfg` is
     /// `Some("foo")`.
@@ -455,12 +497,20 @@ impl TestProps {
                 self.aux_builds.push(ab);
             }
 
+            if let Some(ep) = config.parse_extern_private(ln) {
+                self.extern_private.push(ep);
+            }
+
             if let Some(ee) = config.parse_env(ln, "exec-env") {
                 self.exec_env.push(ee);
             }
 
             if let Some(ee) = config.parse_env(ln, "rustc-env") {
                 self.rustc_env.push(ee);
+            }
+
+            if let Some(ev) = config.parse_name_value_directive(ln, "unset-rustc-env") {
+                self.unset_rustc_env.push(ev);
             }
 
             if let Some(cl) = config.parse_check_line(ln) {
@@ -480,7 +530,7 @@ impl TestProps {
             }
 
             if !self.compile_pass {
-                // run-pass implies must_compile_successfully
+                // run-pass implies compile_pass
                 self.compile_pass = config.parse_compile_pass(ln) || self.run_pass;
             }
 
@@ -511,6 +561,10 @@ impl TestProps {
             if !self.rustfix_only_machine_applicable {
                 self.rustfix_only_machine_applicable =
                     config.parse_rustfix_only_machine_applicable(ln);
+            }
+
+            if self.assembly_output.is_none() {
+                self.assembly_output = config.parse_assembly_output(ln);
             }
         });
 
@@ -589,6 +643,11 @@ impl Config {
 
     fn parse_aux_build(&self, line: &str) -> Option<String> {
         self.parse_name_value_directive(line, "aux-build")
+            .map(|r| r.trim().to_string())
+    }
+
+    fn parse_extern_private(&self, line: &str) -> Option<String> {
+        self.parse_name_value_directive(line, "extern-private")
     }
 
     fn parse_compile_flags(&self, line: &str) -> Option<String> {
@@ -671,6 +730,11 @@ impl Config {
         self.parse_name_directive(line, "skip-codegen")
     }
 
+    fn parse_assembly_output(&self, line: &str) -> Option<String> {
+        self.parse_name_value_directive(line, "assembly-output")
+            .map(|r| r.trim().to_string())
+    }
+
     fn parse_env(&self, line: &str, name: &str) -> Option<(String, String)> {
         self.parse_name_value_directive(line, name).map(|nv| {
             // nv is either FOO or FOO=BAR
@@ -707,6 +771,18 @@ impl Config {
         }
     }
 
+    fn parse_needs_matching_clang(&self, line: &str) -> bool {
+        self.parse_name_directive(line, "needs-matching-clang")
+    }
+
+    fn parse_needs_profiler_support(&self, line: &str) -> bool {
+        self.parse_name_directive(line, "needs-profiler-support")
+    }
+
+    fn parse_needs_sanitizer_support(&self, line: &str) -> bool {
+        self.parse_name_directive(line, "needs-sanitizer-support")
+    }
+
     /// Parses a name-value directive which contains config-specific information, e.g., `ignore-x86`
     /// or `normalize-stderr-32bit`.
     fn parse_cfg_name_directive(&self, line: &str, prefix: &str) -> ParsedNameDirective {
@@ -732,7 +808,7 @@ impl Config {
                 ParsedNameDirective::Match
             } else {
                 match self.mode {
-                    common::DebugInfoBoth => {
+                    common::DebugInfoGdbLldb => {
                         if name == "gdb" {
                             ParsedNameDirective::MatchGdb
                         } else if name == "lldb" {
@@ -740,6 +816,11 @@ impl Config {
                         } else {
                             ParsedNameDirective::NoMatch
                         }
+                    },
+                    common::DebugInfoCdb => if name == "cdb" {
+                        ParsedNameDirective::Match
+                    } else {
+                        ParsedNameDirective::NoMatch
                     },
                     common::DebugInfoGdb => if name == "gdb" {
                         ParsedNameDirective::Match

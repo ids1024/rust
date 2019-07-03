@@ -2,7 +2,8 @@ use std::fmt;
 use std::io;
 use std::path::PathBuf;
 
-use externalfiles::ExternalHtml;
+use crate::externalfiles::ExternalHtml;
+use crate::html::render::SlashChecker;
 
 #[derive(Clone)]
 pub struct Layout {
@@ -27,7 +28,7 @@ pub struct Page<'a> {
 pub fn render<T: fmt::Display, S: fmt::Display>(
     dst: &mut dyn io::Write,
     layout: &Layout,
-    page: &Page,
+    page: &Page<'_>,
     sidebar: &S,
     t: &T,
     css_file_extension: bool,
@@ -156,11 +157,11 @@ pub fn render<T: fmt::Display, S: fmt::Display>(
         window.rootPath = \"{root_path}\";\
         window.currentCrate = \"{krate}\";\
     </script>\
-    <script src=\"{root_path}aliases.js\"></script>\
+    <script src=\"{root_path}aliases{suffix}.js\"></script>\
     <script src=\"{static_root_path}main{suffix}.js\"></script>\
     {static_extra_scripts}\
     {extra_scripts}\
-    <script defer src=\"{root_path}search-index.js\"></script>\
+    <script defer src=\"{root_path}search-index{suffix}.js\"></script>\
 </body>\
 </html>",
     css_extension = if css_file_extension {
@@ -176,16 +177,22 @@ pub fn render<T: fmt::Display, S: fmt::Display>(
     static_root_path = static_root_path,
     root_path = page.root_path,
     css_class = page.css_class,
-    logo      = if layout.logo.is_empty() {
-        format!("<a href='{}{}/index.html'>\
-                 <img src='{static_root_path}rust-logo{suffix}.png' alt='logo' width='100'></a>",
-                static_root_path=static_root_path,
-                suffix=page.resource_suffix)
-    } else {
-        format!("<a href='{}{}/index.html'>\
-                 <img src='{}' alt='logo' width='100'></a>",
-                page.root_path, layout.krate,
-                layout.logo)
+    logo      = {
+        let p = format!("{}{}", page.root_path, layout.krate);
+        let p = SlashChecker(&p);
+        if layout.logo.is_empty() {
+            format!("<a href='{path}index.html'>\
+                     <div class='logo-container'>\
+                     <img src='{static_root_path}rust-logo{suffix}.png' alt='logo'></div></a>",
+                    path=p,
+                    static_root_path=static_root_path,
+                    suffix=page.resource_suffix)
+        } else {
+            format!("<a href='{}index.html'>\
+                     <div class='logo-container'><img src='{}' alt='logo'></div></a>",
+                    p,
+                    layout.logo)
+        }
     },
     title     = page.title,
     description = page.description,

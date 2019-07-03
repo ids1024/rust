@@ -1,12 +1,13 @@
-pub use self::Integer::*;
-pub use self::Primitive::*;
+pub use Integer::*;
+pub use Primitive::*;
 
-use spec::Target;
+use crate::spec::Target;
 
 use std::fmt;
 use std::ops::{Add, Deref, Sub, Mul, AddAssign, Range, RangeInclusive};
 
 use rustc_data_structures::indexed_vec::{Idx, IndexVec};
+use syntax_pos::symbol::{sym, Symbol};
 
 pub mod call;
 
@@ -135,7 +136,7 @@ impl TargetDataLayout {
                     }
                     if bits >= i128_align_src && bits <= 128 {
                         // Default alignment for i128 is decided by taking the alignment of
-                        // largest-sized i{64...128}.
+                        // largest-sized i{64..=128}.
                         i128_align_src = bits;
                         dl.i128_align = a;
                     }
@@ -174,7 +175,7 @@ impl TargetDataLayout {
         Ok(dl)
     }
 
-    /// Return exclusive upper bound on object size.
+    /// Returns exclusive upper bound on object size.
     ///
     /// The theoretical maximum object size is defined as the maximum positive `isize` value.
     /// This ensures that the `offset` semantics remain well-defined by allowing it to correctly
@@ -396,7 +397,7 @@ impl Align {
         self.bytes() * 8
     }
 
-    /// Compute the best alignment possible for the given offset
+    /// Computes the best alignment possible for the given offset
     /// (the largest power of two that the offset is a multiple of).
     ///
     /// N.B., for an offset of `0`, this happens to return `2^64`.
@@ -476,7 +477,7 @@ impl Integer {
         }
     }
 
-    /// Find the smallest Integer type which can represent the signed value.
+    /// Finds the smallest Integer type which can represent the signed value.
     pub fn fit_signed(x: i128) -> Integer {
         match x {
             -0x0000_0000_0000_0080..=0x0000_0000_0000_007f => I8,
@@ -487,7 +488,7 @@ impl Integer {
         }
     }
 
-    /// Find the smallest Integer type which can represent the unsigned value.
+    /// Finds the smallest Integer type which can represent the unsigned value.
     pub fn fit_unsigned(x: u128) -> Integer {
         match x {
             0..=0x0000_0000_0000_00ff => I8,
@@ -498,7 +499,7 @@ impl Integer {
         }
     }
 
-    /// Find the smallest integer with the given alignment.
+    /// Finds the smallest integer with the given alignment.
     pub fn for_align<C: HasDataLayout>(cx: &C, wanted: Align) -> Option<Integer> {
         let dl = cx.data_layout();
 
@@ -533,13 +534,13 @@ pub enum FloatTy {
 }
 
 impl fmt::Debug for FloatTy {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Display::fmt(self, f)
     }
 }
 
 impl fmt::Display for FloatTy {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.ty_to_string())
     }
 }
@@ -549,6 +550,13 @@ impl FloatTy {
         match self {
             FloatTy::F32 => "f32",
             FloatTy::F64 => "f64",
+        }
+    }
+
+    pub fn to_symbol(self) -> Symbol {
+        match self {
+            FloatTy::F32 => sym::f32,
+            FloatTy::F64 => sym::f64,
         }
     }
 
@@ -575,7 +583,7 @@ pub enum Primitive {
     Pointer
 }
 
-impl<'a, 'tcx> Primitive {
+impl Primitive {
     pub fn size<C: HasDataLayout>(self, cx: &C) -> Size {
         let dl = cx.data_layout();
 
@@ -734,7 +742,7 @@ impl FieldPlacement {
         }
     }
 
-    /// Get source indices of the fields by increasing offsets.
+    /// Gets source indices of the fields by increasing offsets.
     #[inline]
     pub fn index_by_increasing_offset<'a>(&'a self) -> impl Iterator<Item=usize>+'a {
         let mut inverse_small = [0u8; 64];
@@ -786,7 +794,7 @@ pub enum Abi {
 }
 
 impl Abi {
-    /// Returns true if the layout corresponds to an unsized type.
+    /// Returns `true` if the layout corresponds to an unsized type.
     pub fn is_unsized(&self) -> bool {
         match *self {
             Abi::Uninhabited |
@@ -797,7 +805,7 @@ impl Abi {
         }
     }
 
-    /// Returns true if this is a single signed integer scalar
+    /// Returns `true` if this is a single signed integer scalar
     pub fn is_signed(&self) -> bool {
         match *self {
             Abi::Scalar(ref scal) => match scal.value {
@@ -808,7 +816,7 @@ impl Abi {
         }
     }
 
-    /// Returns true if this is an uninhabited type
+    /// Returns `true` if this is an uninhabited type
     pub fn is_uninhabited(&self) -> bool {
         match *self {
             Abi::Uninhabited => true,
@@ -828,29 +836,36 @@ pub enum Variants {
         index: VariantIdx,
     },
 
-    /// General-case enums: for each case there is a struct, and they all have
-    /// all space reserved for the tag, and their first field starts
-    /// at a non-0 offset, after where the tag would go.
-    Tagged {
-        tag: Scalar,
+    /// Enum-likes with more than one inhabited variant: for each case there is
+    /// a struct, and they all have space reserved for the discriminant.
+    /// For enums this is the sole field of the layout.
+    Multiple {
+        discr: Scalar,
+        discr_kind: DiscriminantKind,
+        discr_index: usize,
         variants: IndexVec<VariantIdx, LayoutDetails>,
     },
+}
 
-    /// Multiple cases distinguished by a niche (values invalid for a type):
+#[derive(PartialEq, Eq, Hash, Debug)]
+pub enum DiscriminantKind {
+    /// Integer tag holding the discriminant value itself.
+    Tag,
+
+    /// Niche (values invalid for a type) encoding the discriminant:
     /// the variant `dataful_variant` contains a niche at an arbitrary
-    /// offset (field 0 of the enum), which for a variant with discriminant
-    /// `d` is set to `(d - niche_variants.start).wrapping_add(niche_start)`.
+    /// offset (field `discr_index` of the enum), which for a variant with
+    /// discriminant `d` is set to
+    /// `(d - niche_variants.start).wrapping_add(niche_start)`.
     ///
     /// For example, `Option<(usize, &T)>`  is represented such that
     /// `None` has a null pointer for the second tuple field, and
     /// `Some` is the identity function (with a non-null reference).
-    NicheFilling {
+    Niche {
         dataful_variant: VariantIdx,
         niche_variants: RangeInclusive<VariantIdx>,
-        niche: Scalar,
         niche_start: u128,
-        variants: IndexVec<VariantIdx, LayoutDetails>,
-    }
+    },
 }
 
 #[derive(PartialEq, Eq, Hash, Debug)]
@@ -903,6 +918,28 @@ pub trait LayoutOf {
     fn layout_of(&self, ty: Self::Ty) -> Self::TyLayout;
 }
 
+#[derive(Copy, Clone, PartialEq, Eq)]
+pub enum PointerKind {
+    /// Most general case, we know no restrictions to tell LLVM.
+    Shared,
+
+    /// `&T` where `T` contains no `UnsafeCell`, is `noalias` and `readonly`.
+    Frozen,
+
+    /// `&mut T`, when we know `noalias` is safe for LLVM.
+    UniqueBorrowed,
+
+    /// `Box<T>`, unlike `UniqueBorrowed`, it also has `noalias` on returns.
+    UniqueOwned
+}
+
+#[derive(Copy, Clone)]
+pub struct PointeeInfo {
+    pub size: Size,
+    pub align: Align,
+    pub safe: Option<PointerKind>,
+}
+
 pub trait TyLayoutMethods<'a, C: LayoutOf<Ty = Self>>: Sized {
     fn for_variant(
         this: TyLayout<'a, Self>,
@@ -910,6 +947,11 @@ pub trait TyLayoutMethods<'a, C: LayoutOf<Ty = Self>>: Sized {
         variant_index: VariantIdx,
     ) -> TyLayout<'a, Self>;
     fn field(this: TyLayout<'a, Self>, cx: &C, i: usize) -> C::TyLayout;
+    fn pointee_info_at(
+        this: TyLayout<'a, Self>,
+        cx: &C,
+        offset: Size,
+    ) -> Option<PointeeInfo>;
 }
 
 impl<'a, Ty> TyLayout<'a, Ty> {
@@ -921,15 +963,19 @@ impl<'a, Ty> TyLayout<'a, Ty> {
     where Ty: TyLayoutMethods<'a, C>, C: LayoutOf<Ty = Ty> {
         Ty::field(self, cx, i)
     }
+    pub fn pointee_info_at<C>(self, cx: &C, offset: Size) -> Option<PointeeInfo>
+    where Ty: TyLayoutMethods<'a, C>, C: LayoutOf<Ty = Ty> {
+        Ty::pointee_info_at(self, cx, offset)
+    }
 }
 
 impl<'a, Ty> TyLayout<'a, Ty> {
-    /// Returns true if the layout corresponds to an unsized type.
+    /// Returns `true` if the layout corresponds to an unsized type.
     pub fn is_unsized(&self) -> bool {
         self.abi.is_unsized()
     }
 
-    /// Returns true if the type is a ZST and not unsized.
+    /// Returns `true` if the type is a ZST and not unsized.
     pub fn is_zst(&self) -> bool {
         match self.abi {
             Abi::Scalar(_) |

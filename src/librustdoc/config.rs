@@ -1,28 +1,28 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::fmt;
 use std::path::PathBuf;
 
 use errors;
-use errors::emitter::ColorConfig;
+use errors::emitter::{ColorConfig, HumanReadableErrorType};
 use getopts;
 use rustc::lint::Level;
 use rustc::session::early_error;
 use rustc::session::config::{CodegenOptions, DebuggingOptions, ErrorOutputType, Externs};
 use rustc::session::config::{nightly_options, build_codegen_options, build_debugging_options,
-                             get_cmd_lint_options};
+                             get_cmd_lint_options, ExternEntry};
 use rustc::session::search_paths::SearchPath;
 use rustc_driver;
 use rustc_target::spec::TargetTriple;
-use syntax::edition::Edition;
+use syntax::edition::{Edition, DEFAULT_EDITION};
 
-use core::new_handler;
-use externalfiles::ExternalHtml;
-use html;
-use html::markdown::IdMap;
-use html::static_files;
-use opts;
-use passes::{self, DefaultPassOption};
-use theme;
+use crate::core::new_handler;
+use crate::externalfiles::ExternalHtml;
+use crate::html;
+use crate::html::{static_files};
+use crate::html::markdown::{IdMap};
+use crate::opts;
+use crate::passes::{self, DefaultPassOption};
+use crate::theme;
 
 /// Configuration options for rustdoc.
 #[derive(Clone)]
@@ -85,6 +85,9 @@ pub struct Options {
     /// Whether to display warnings during doc generation or while gathering doctests. By default,
     /// all non-rustdoc-specific lints are allowed when generating docs.
     pub display_warnings: bool,
+    /// Whether to run the `calculate-doc-coverage` pass, which counts the number of public items
+    /// with and without documentation.
+    pub show_coverage: bool,
 
     // Options that alter generated documentation pages
 
@@ -95,11 +98,11 @@ pub struct Options {
 }
 
 impl fmt::Debug for Options {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         struct FmtExterns<'a>(&'a Externs);
 
         impl<'a> fmt::Debug for FmtExterns<'a> {
-            fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
                 f.debug_map()
                     .entries(self.0.iter())
                     .finish()
@@ -128,6 +131,7 @@ impl fmt::Debug for Options {
             .field("default_passes", &self.default_passes)
             .field("manual_passes", &self.manual_passes)
             .field("display_warnings", &self.display_warnings)
+            .field("show_coverage", &self.show_coverage)
             .field("crate_version", &self.crate_version)
             .field("render_options", &self.render_options)
             .finish()
@@ -150,9 +154,9 @@ pub struct RenderOptions {
     pub playground_url: Option<String>,
     /// Whether to sort modules alphabetically on a module page instead of using declaration order.
     /// `true` by default.
-    ///
-    /// FIXME(misdreavus): the flag name is `--sort-modules-by-appearance` but the meaning is
-    /// inverted once read
+    //
+    // FIXME(misdreavus): the flag name is `--sort-modules-by-appearance` but the meaning is
+    // inverted once read.
     pub sort_modules_alphabetically: bool,
     /// List of themes to extend the docs with. Original argument name is included to assist in
     /// displaying errors if it fails a theme check.
@@ -165,9 +169,9 @@ pub struct RenderOptions {
     pub resource_suffix: String,
     /// Whether to run the static CSS/JavaScript through a minifier when outputting them. `true` by
     /// default.
-    ///
-    /// FIXME(misdreavus): the flag name is `--disable-minification` but the meaning is inverted
-    /// once read
+    //
+    // FIXME(misdreavus): the flag name is `--disable-minification` but the meaning is inverted
+    // once read.
     pub enable_minification: bool,
     /// Whether to create an index page in the root of the output directory. If this is true but
     /// `enable_index_page` is None, generate a static listing of crates instead.
@@ -192,17 +196,19 @@ pub struct RenderOptions {
     /// If false, the `select` element to have search filtering by crates on rendered docs
     /// won't be generated.
     pub generate_search_filter: bool,
+    /// Option (disabled by default) to generate files used by RLS and some other tools.
+    pub generate_redirect_pages: bool,
 }
 
 impl Options {
     /// Parses the given command-line for options. If an error message or other early-return has
     /// been printed, returns `Err` with the exit code.
-    pub fn from_matches(matches: &getopts::Matches) -> Result<Options, isize> {
+    pub fn from_matches(matches: &getopts::Matches) -> Result<Options, i32> {
         // Check for unstable options.
         nightly_options::check_nightly_options(&matches, &opts());
 
         if matches.opt_present("h") || matches.opt_present("help") {
-            ::usage("rustdoc");
+            crate::usage("rustdoc");
             return Err(0);
         } else if matches.opt_present("version") {
             rustc_driver::version("rustdoc", &matches);
@@ -212,7 +218,7 @@ impl Options {
         if matches.opt_strs("passes") == ["list"] {
             println!("Available passes for running rustdoc:");
             for pass in passes::PASSES {
-                println!("{:>20} - {}", pass.name(), pass.description());
+                println!("{:>20} - {}", pass.name, pass.description);
             }
             println!("\nDefault passes for rustdoc:");
             for &name in passes::DEFAULT_PASSES {
@@ -222,6 +228,18 @@ impl Options {
             for &name in passes::DEFAULT_PRIVATE_PASSES {
                 println!("{:>20}", name);
             }
+
+            if nightly_options::is_nightly_build() {
+                println!("\nPasses run with `--show-coverage`:");
+                for &name in passes::DEFAULT_COVERAGE_PASSES {
+                    println!("{:>20}", name);
+                }
+                println!("\nPasses run with `--show-coverage --document-private-items`:");
+                for &name in passes::PRIVATE_COVERAGE_PASSES {
+                    println!("{:>20}", name);
+                }
+            }
+
             return Err(0);
         }
 
@@ -236,12 +254,19 @@ impl Options {
                                       (instead was `{}`)", arg));
             }
         };
+        // FIXME: deduplicate this code from the identical code in librustc/session/config.rs
         let error_format = match matches.opt_str("error-format").as_ref().map(|s| &s[..]) {
-            Some("human") => ErrorOutputType::HumanReadable(color),
-            Some("json") => ErrorOutputType::Json(false),
-            Some("pretty-json") => ErrorOutputType::Json(true),
-            Some("short") => ErrorOutputType::Short(color),
-            None => ErrorOutputType::HumanReadable(color),
+            None |
+            Some("human") => ErrorOutputType::HumanReadable(HumanReadableErrorType::Default(color)),
+            Some("json") => ErrorOutputType::Json {
+                pretty: false,
+                json_rendered: HumanReadableErrorType::Default(ColorConfig::Never),
+            },
+            Some("pretty-json") => ErrorOutputType::Json {
+                pretty: true,
+                json_rendered: HumanReadableErrorType::Default(ColorConfig::Never),
+            },
+            Some("short") => ErrorOutputType::HumanReadable(HumanReadableErrorType::Short(color)),
             Some(arg) => {
                 early_error(ErrorOutputType::default(),
                             &format!("argument for --error-format must be `human`, `json` or \
@@ -326,6 +351,9 @@ impl Options {
                             .unwrap_or_else(|| PathBuf::from("doc"));
         let mut cfgs = matches.opt_strs("cfg");
         cfgs.push("rustdoc".to_string());
+        if should_test {
+            cfgs.push("test".to_string());
+        }
 
         let extension_css = matches.opt_str("e").map(|s| PathBuf::from(&s));
 
@@ -358,6 +386,18 @@ impl Options {
             }
         }
 
+        let edition = if let Some(e) = matches.opt_str("edition") {
+            match e.parse() {
+                Ok(e) => e,
+                Err(_) => {
+                    diag.struct_err("could not parse edition").emit();
+                    return Err(1);
+                }
+            }
+        } else {
+            DEFAULT_EDITION
+        };
+
         let mut id_map = html::markdown::IdMap::new();
         id_map.populate(html::render::initial_ids());
         let external_html = match ExternalHtml::load(
@@ -365,18 +405,10 @@ impl Options {
                 &matches.opt_strs("html-before-content"),
                 &matches.opt_strs("html-after-content"),
                 &matches.opt_strs("markdown-before-content"),
-                &matches.opt_strs("markdown-after-content"), &diag, &mut id_map) {
+                &matches.opt_strs("markdown-after-content"),
+                &diag, &mut id_map, edition) {
             Some(eh) => eh,
             None => return Err(3),
-        };
-
-        let edition = matches.opt_str("edition").unwrap_or("2015".to_string());
-        let edition = match edition.parse() {
-            Ok(e) => e,
-            Err(_) => {
-                diag.struct_err("could not parse edition").emit();
-                return Err(1);
-            }
         };
 
         match matches.opt_str("r").as_ref().map(|s| &**s) {
@@ -411,9 +443,16 @@ impl Options {
             }
         });
 
+        let show_coverage = matches.opt_present("show-coverage");
+        let document_private = matches.opt_present("document-private-items");
+
         let default_passes = if matches.opt_present("no-defaults") {
             passes::DefaultPassOption::None
-        } else if matches.opt_present("document-private-items") {
+        } else if show_coverage && document_private {
+            passes::DefaultPassOption::PrivateCoverage
+        } else if show_coverage {
+            passes::DefaultPassOption::Coverage
+        } else if document_private {
             passes::DefaultPassOption::Private
         } else {
             passes::DefaultPassOption::Default
@@ -436,6 +475,7 @@ impl Options {
         let static_root_path = matches.opt_str("static-root-path");
         let generate_search_filter = !matches.opt_present("disable-per-crate-search");
         let persist_doctests = matches.opt_str("persist-doctests").map(PathBuf::from);
+        let generate_redirect_pages = matches.opt_present("generate-redirect-pages");
 
         let (lint_opts, describe_lints, lint_cap) = get_cmd_lint_options(matches, error_format);
 
@@ -460,6 +500,7 @@ impl Options {
             default_passes,
             manual_passes,
             display_warnings,
+            show_coverage,
             crate_version,
             persist_doctests,
             render_options: RenderOptions {
@@ -480,11 +521,12 @@ impl Options {
                 markdown_css,
                 markdown_playground_url,
                 generate_search_filter,
+                generate_redirect_pages,
             }
         })
     }
 
-    /// Returns whether the file given as `self.input` is a Markdown file.
+    /// Returns `true` if the file given as `self.input` is a Markdown file.
     pub fn markdown_input(&self) -> bool {
         self.input.extension()
             .map_or(false, |e| e == "md" || e == "markdown")
@@ -500,7 +542,7 @@ fn check_deprecated_options(matches: &getopts::Matches, diag: &errors::Handler) 
        "passes",
     ];
 
-    for flag in deprecated_flags.into_iter() {
+    for flag in deprecated_flags.iter() {
         if matches.opt_present(flag) {
             let mut err = diag.struct_warn(&format!("the '{}' flag is considered deprecated",
                                                     flag));
@@ -550,7 +592,7 @@ fn parse_extern_html_roots(
 /// error message.
 // FIXME(eddyb) This shouldn't be duplicated with `rustc::session`.
 fn parse_externs(matches: &getopts::Matches) -> Result<Externs, String> {
-    let mut externs: BTreeMap<_, BTreeSet<_>> = BTreeMap::new();
+    let mut externs: BTreeMap<_, ExternEntry> = BTreeMap::new();
     for arg in &matches.opt_strs("extern") {
         let mut parts = arg.splitn(2, '=');
         let name = parts.next().ok_or("--extern value must not be empty".to_string())?;
@@ -560,7 +602,10 @@ fn parse_externs(matches: &getopts::Matches) -> Result<Externs, String> {
                         enable `--extern crate_name` without `=path`".to_string());
         }
         let name = name.to_string();
-        externs.entry(name).or_default().insert(location);
+        // For Rustdoc purposes, we can treat all externs as public
+        externs.entry(name)
+            .or_default()
+            .locations.insert(location.clone());
     }
     Ok(Externs::new(externs))
 }

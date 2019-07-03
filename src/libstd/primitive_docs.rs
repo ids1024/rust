@@ -126,7 +126,7 @@ mod prim_bool { }
 ///
 /// ```ignore (string-from-str-error-type-is-not-never-yet)
 /// #[feature(exhaustive_patterns)]
-/// // NOTE: This does not work today!
+/// // NOTE: this does not work today!
 /// let Ok(s) = String::from_str("hello");
 /// ```
 ///
@@ -204,10 +204,10 @@ mod prim_bool { }
 /// #![feature(never_type)]
 /// # use std::fmt;
 /// # trait Debug {
-/// # fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result;
+/// # fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result;
 /// # }
 /// impl Debug for ! {
-///     fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+///     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
 ///         *self
 ///     }
 /// }
@@ -279,7 +279,7 @@ mod prim_never { }
 ///
 /// As always, remember that a human intuition for 'character' may not map to
 /// Unicode's definitions. For example, despite looking similar, the 'é'
-/// character is one Unicode code point while 'é' is two Unicode code points:
+/// character is one Unicode code point while 'é' is two Unicode code points:
 ///
 /// ```
 /// let mut chars = "é".chars();
@@ -482,8 +482,8 @@ mod prim_pointer { }
 /// an array. Indeed, this provides most of the API for working with arrays.
 /// Slices have a dynamic size and do not coerce to arrays.
 ///
-/// There is no way to move elements out of an array. See [`mem::replace`][replace]
-/// for an alternative.
+/// You can move elements out of an array with a slice pattern. If you want
+/// one element, see [`mem::replace`][replace].
 ///
 /// # Examples
 ///
@@ -523,6 +523,16 @@ mod prim_pointer { }
 /// ```
 /// # let array: [i32; 3] = [0; 3];
 /// for x in &array { }
+/// ```
+///
+/// You can use a slice pattern to move elements out of an array:
+///
+/// ```
+/// fn move_away(_: String) { /* Do interesting things. */ }
+///
+/// let [john, roa] = ["John".to_string(), "Roa".to_string()];
+/// move_away(john);
+/// move_away(roa);
 /// ```
 ///
 /// [slice]: primitive.slice.html
@@ -682,6 +692,10 @@ mod prim_str { }
 /// assert_eq!(tuple.1, 5);
 /// assert_eq!(tuple.2, 'c');
 /// ```
+///
+/// The sequential nature of the tuple applies to its implementations of various
+/// traits.  For example, in `PartialOrd` and `Ord`, the elements are compared
+/// sequentially until the first non-equal set is found.
 ///
 /// For more about tuples, see [the book](../book/ch03-02-data-types.html#the-tuple-type).
 ///
@@ -1062,7 +1076,7 @@ mod prim_ref { }
 /// On top of that, function pointers can vary based on what ABI they use. This is achieved by
 /// adding the `extern` keyword to the type name, followed by the ABI in question. For example,
 /// `fn()` is different from `extern "C" fn()`, which itself is different from `extern "stdcall"
-/// fn()`, and so on for the various ABIs that Rust supports.  Non-`extern` functions have an ABI
+/// fn()`, and so on for the various ABIs that Rust supports. Non-`extern` functions have an ABI
 /// of `"Rust"`, and `extern` functions without an explicit ABI have an ABI of `"C"`. For more
 /// information, see [the nomicon's section on foreign calling conventions][nomicon-abi].
 ///

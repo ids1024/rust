@@ -2,16 +2,17 @@ use std::fmt::Write;
 use std::hash::Hash;
 use std::ops::RangeInclusive;
 
-use syntax_pos::symbol::Symbol;
+use syntax_pos::symbol::{sym, Symbol};
+use rustc::hir;
 use rustc::ty::layout::{self, Size, Align, TyLayout, LayoutOf, VariantIdx};
 use rustc::ty;
 use rustc_data_structures::fx::FxHashSet;
 use rustc::mir::interpret::{
-    Scalar, AllocKind, EvalResult, EvalErrorKind,
+    Scalar, GlobalAlloc, InterpResult, InterpError, CheckInAllocMsg,
 };
 
 use super::{
-    OpTy, Machine, EvalContext, ValueVisitor,
+    OpTy, Machine, InterpretCx, ValueVisitor, MPlaceTy,
 };
 
 macro_rules! validation_failure {
@@ -65,6 +66,7 @@ macro_rules! try_validation {
 pub enum PathElem {
     Field(Symbol),
     Variant(Symbol),
+    GeneratorState(VariantIdx),
     ClosureVar(Symbol),
     ArrayElem(usize),
     TupleElem(usize),
@@ -74,13 +76,13 @@ pub enum PathElem {
 }
 
 /// State for tracking recursive validation of references
-pub struct RefTracking<'tcx, Tag> {
-    pub seen: FxHashSet<(OpTy<'tcx, Tag>)>,
-    pub todo: Vec<(OpTy<'tcx, Tag>, Vec<PathElem>)>,
+pub struct RefTracking<T> {
+    pub seen: FxHashSet<T>,
+    pub todo: Vec<(T, Vec<PathElem>)>,
 }
 
-impl<'tcx, Tag: Copy+Eq+Hash> RefTracking<'tcx, Tag> {
-    pub fn new(op: OpTy<'tcx, Tag>) -> Self {
+impl<T: Copy + Eq + Hash> RefTracking<T> {
+    pub fn new(op: T) -> Self {
         let mut ref_tracking = RefTracking {
             seen: FxHashSet::default(),
             todo: vec![(op, Vec::new())],
@@ -99,6 +101,7 @@ fn path_format(path: &Vec<PathElem>) -> String {
         match elem {
             Field(name) => write!(out, ".{}", name),
             Variant(name) => write!(out, ".<downcast-variant({})>", name),
+            GeneratorState(idx) => write!(out, ".<generator-state({})>", idx.index()),
             ClosureVar(name) => write!(out, ".<closure-var({})>", name),
             TupleElem(idx) => write!(out, ".{}", idx),
             ArrayElem(idx) => write!(out, "[{}]", idx),
@@ -146,17 +149,17 @@ fn wrapping_range_format(r: &RangeInclusive<u128>, max_hi: u128) -> String {
     }
 }
 
-struct ValidityVisitor<'rt, 'a: 'rt, 'mir: 'rt, 'tcx: 'a+'rt+'mir, M: Machine<'a, 'mir, 'tcx>+'rt> {
+struct ValidityVisitor<'rt, 'mir, 'tcx, M: Machine<'mir, 'tcx>> {
     /// The `path` may be pushed to, but the part that is present when a function
     /// starts must not be changed!  `visit_fields` and `visit_array` rely on
     /// this stack discipline.
     path: Vec<PathElem>,
-    ref_tracking: Option<&'rt mut RefTracking<'tcx, M::PointerTag>>,
+    ref_tracking: Option<&'rt mut RefTracking<MPlaceTy<'tcx, M::PointerTag>>>,
     const_mode: bool,
-    ecx: &'rt EvalContext<'a, 'mir, 'tcx, M>,
+    ecx: &'rt InterpretCx<'mir, 'tcx, M>,
 }
 
-impl<'rt, 'a, 'mir, 'tcx, M: Machine<'a, 'mir, 'tcx>> ValidityVisitor<'rt, 'a, 'mir, 'tcx, M> {
+impl<'rt, 'mir, 'tcx, M: Machine<'mir, 'tcx>> ValidityVisitor<'rt, 'mir, 'tcx, M> {
     fn aggregate_field_path_elem(
         &mut self,
         layout: TyLayout<'tcx>,
@@ -165,13 +168,27 @@ impl<'rt, 'a, 'mir, 'tcx, M: Machine<'a, 'mir, 'tcx>> ValidityVisitor<'rt, 'a, '
         match layout.ty.sty {
             // generators and closures.
             ty::Closure(def_id, _) | ty::Generator(def_id, _, _) => {
-                if let Some(upvar) = self.ecx.tcx.optimized_mir(def_id).upvar_decls.get(field) {
-                    PathElem::ClosureVar(upvar.debug_name)
-                } else {
-                    // Sometimes the index is beyond the number of freevars (seen
-                    // for a generator).
-                    PathElem::ClosureVar(Symbol::intern(&field.to_string()))
+                let mut name = None;
+                if def_id.is_local() {
+                    let tables = self.ecx.tcx.typeck_tables_of(def_id);
+                    if let Some(upvars) = tables.upvar_list.get(&def_id) {
+                        // Sometimes the index is beyond the number of upvars (seen
+                        // for a generator).
+                        if let Some((&var_hir_id, _)) = upvars.get_index(field) {
+                            let node = self.ecx.tcx.hir().get_by_hir_id(var_hir_id);
+                            if let hir::Node::Binding(pat) = node {
+                                if let hir::PatKind::Binding(_, _, ident, _) = pat.node {
+                                    name = Some(ident.name);
+                                }
+                            }
+                        }
+                    }
                 }
+
+                PathElem::ClosureVar(name.unwrap_or_else(|| {
+                    // Fall back to showing the field index.
+                    sym::integer(field)
+                }))
             }
 
             // tuples
@@ -206,7 +223,7 @@ impl<'rt, 'a, 'mir, 'tcx, M: Machine<'a, 'mir, 'tcx>> ValidityVisitor<'rt, 'a, '
         &mut self,
         new_op: OpTy<'tcx, M::PointerTag>,
         elem: PathElem,
-    ) -> EvalResult<'tcx> {
+    ) -> InterpResult<'tcx> {
         // Remember the old state
         let path_len = self.path.len();
         // Perform operation
@@ -218,13 +235,13 @@ impl<'rt, 'a, 'mir, 'tcx, M: Machine<'a, 'mir, 'tcx>> ValidityVisitor<'rt, 'a, '
     }
 }
 
-impl<'rt, 'a, 'mir, 'tcx, M: Machine<'a, 'mir, 'tcx>>
-    ValueVisitor<'a, 'mir, 'tcx, M> for ValidityVisitor<'rt, 'a, 'mir, 'tcx, M>
+impl<'rt, 'mir, 'tcx, M: Machine<'mir, 'tcx>> ValueVisitor<'mir, 'tcx, M>
+    for ValidityVisitor<'rt, 'mir, 'tcx, M>
 {
     type V = OpTy<'tcx, M::PointerTag>;
 
     #[inline(always)]
-    fn ecx(&self) -> &EvalContext<'a, 'mir, 'tcx, M> {
+    fn ecx(&self) -> &InterpretCx<'mir, 'tcx, M> {
         &self.ecx
     }
 
@@ -234,7 +251,7 @@ impl<'rt, 'a, 'mir, 'tcx, M: Machine<'a, 'mir, 'tcx>>
         old_op: OpTy<'tcx, M::PointerTag>,
         field: usize,
         new_op: OpTy<'tcx, M::PointerTag>
-    ) -> EvalResult<'tcx> {
+    ) -> InterpResult<'tcx> {
         let elem = self.aggregate_field_path_elem(old_op.layout, field);
         self.visit_elem(new_op, elem)
     }
@@ -245,24 +262,29 @@ impl<'rt, 'a, 'mir, 'tcx, M: Machine<'a, 'mir, 'tcx>>
         old_op: OpTy<'tcx, M::PointerTag>,
         variant_id: VariantIdx,
         new_op: OpTy<'tcx, M::PointerTag>
-    ) -> EvalResult<'tcx> {
-        let name = old_op.layout.ty.ty_adt_def().unwrap().variants[variant_id].ident.name;
-        self.visit_elem(new_op, PathElem::Variant(name))
+    ) -> InterpResult<'tcx> {
+        let name = match old_op.layout.ty.sty {
+            ty::Adt(adt, _) => PathElem::Variant(adt.variants[variant_id].ident.name),
+            // Generators also have variants
+            ty::Generator(..) => PathElem::GeneratorState(variant_id),
+            _ => bug!("Unexpected type with variant: {:?}", old_op.layout.ty),
+        };
+        self.visit_elem(new_op, name)
     }
 
     #[inline]
-    fn visit_value(&mut self, op: OpTy<'tcx, M::PointerTag>) -> EvalResult<'tcx>
+    fn visit_value(&mut self, op: OpTy<'tcx, M::PointerTag>) -> InterpResult<'tcx>
     {
         trace!("visit_value: {:?}, {:?}", *op, op.layout);
         // Translate some possible errors to something nicer.
         match self.walk_value(op) {
             Ok(()) => Ok(()),
             Err(err) => match err.kind {
-                EvalErrorKind::InvalidDiscriminant(val) =>
+                InterpError::InvalidDiscriminant(val) =>
                     validation_failure!(
                         val, self.path, "a valid enum discriminant"
                     ),
-                EvalErrorKind::ReadPointerAsBytes =>
+                InterpError::ReadPointerAsBytes =>
                     validation_failure!(
                         "a pointer", self.path, "plain (non-pointer) bytes"
                     ),
@@ -271,7 +293,7 @@ impl<'rt, 'a, 'mir, 'tcx, M: Machine<'a, 'mir, 'tcx>>
         }
     }
 
-    fn visit_primitive(&mut self, value: OpTy<'tcx, M::PointerTag>) -> EvalResult<'tcx>
+    fn visit_primitive(&mut self, value: OpTy<'tcx, M::PointerTag>) -> InterpResult<'tcx>
     {
         let value = self.ecx.read_immediate(value)?;
         // Go over all the primitive types
@@ -353,12 +375,14 @@ impl<'rt, 'a, 'mir, 'tcx, M: Machine<'a, 'mir, 'tcx>>
                 match self.ecx.memory.check_align(ptr, align) {
                     Ok(_) => {},
                     Err(err) => {
-                        error!("{:?} is not aligned to {:?}", ptr, align);
+                        info!("{:?} is not aligned to {:?}", ptr, align);
                         match err.kind {
-                            EvalErrorKind::InvalidNullPointerUsage =>
+                            InterpError::InvalidNullPointerUsage =>
                                 return validation_failure!("NULL reference", self.path),
-                            EvalErrorKind::AlignmentCheckFailed { .. } =>
-                                return validation_failure!("unaligned reference", self.path),
+                            InterpError::AlignmentCheckFailed { required, has } =>
+                                return validation_failure!(format!("unaligned reference \
+                                    (required {} byte alignment but found {})",
+                                    required.bytes(), has.bytes()), self.path),
                             _ =>
                                 return validation_failure!(
                                     "dangling (out-of-bounds) reference (might be NULL at \
@@ -378,7 +402,7 @@ impl<'rt, 'a, 'mir, 'tcx, M: Machine<'a, 'mir, 'tcx>>
                             "integer pointer in non-ZST reference", self.path);
                         // Skip validation entirely for some external statics
                         let alloc_kind = self.ecx.tcx.alloc_map.lock().get(ptr.alloc_id);
-                        if let Some(AllocKind::Static(did)) = alloc_kind {
+                        if let Some(GlobalAlloc::Static(did)) = alloc_kind {
                             // `extern static` cannot be validated as they have no body.
                             // FIXME: Statics from other crates are also skipped.
                             // They might be checked at a different type, but for now we
@@ -392,23 +416,22 @@ impl<'rt, 'a, 'mir, 'tcx, M: Machine<'a, 'mir, 'tcx>>
                         try_validation!(
                             self.ecx.memory
                                 .get(ptr.alloc_id)?
-                                .check_bounds(self.ecx, ptr, size),
+                                .check_bounds(self.ecx, ptr, size, CheckInAllocMsg::InboundsTest),
                             "dangling (not entirely in bounds) reference", self.path);
                     }
                     // Check if we have encountered this pointer+layout combination
                     // before.  Proceed recursively even for integer pointers, no
                     // reason to skip them! They are (recursively) valid for some ZST,
                     // but not for others (e.g., `!` is a ZST).
-                    let op = place.into();
-                    if ref_tracking.seen.insert(op) {
-                        trace!("Recursing below ptr {:#?}", *op);
+                    if ref_tracking.seen.insert(place) {
+                        trace!("Recursing below ptr {:#?}", *place);
                         // We need to clone the path anyway, make sure it gets created
                         // with enough space for the additional `Deref`.
                         let mut new_path = Vec::with_capacity(self.path.len()+1);
                         new_path.clone_from(&self.path);
                         new_path.push(PathElem::Deref);
                         // Remember to come back to this later.
-                        ref_tracking.todo.push((op, new_path));
+                        ref_tracking.todo.push((place, new_path));
                     }
                 }
             }
@@ -426,7 +449,7 @@ impl<'rt, 'a, 'mir, 'tcx, M: Machine<'a, 'mir, 'tcx>>
         Ok(())
     }
 
-    fn visit_uninhabited(&mut self) -> EvalResult<'tcx>
+    fn visit_uninhabited(&mut self) -> InterpResult<'tcx>
     {
         validation_failure!("a value of an uninhabited type", self.path)
     }
@@ -435,7 +458,7 @@ impl<'rt, 'a, 'mir, 'tcx, M: Machine<'a, 'mir, 'tcx>>
         &mut self,
         op: OpTy<'tcx, M::PointerTag>,
         layout: &layout::Scalar,
-    ) -> EvalResult<'tcx> {
+    ) -> InterpResult<'tcx> {
         let value = self.ecx.read_scalar(op)?;
         // Determine the allowed range
         let (lo, hi) = layout.valid_range.clone().into_inner();
@@ -456,8 +479,8 @@ impl<'rt, 'a, 'mir, 'tcx, M: Machine<'a, 'mir, 'tcx>>
                 wrapping_range_format(&layout.valid_range, max_hi),
             )
         );
-        let bits = match value {
-            Scalar::Ptr(ptr) => {
+        let bits = match value.to_bits_or_ptr(op.layout.size, self.ecx) {
+            Err(ptr) => {
                 if lo == 1 && hi == max_hi {
                     // only NULL is not allowed.
                     // We can call `check_align` to check non-NULL-ness, but have to also look
@@ -485,10 +508,8 @@ impl<'rt, 'a, 'mir, 'tcx, M: Machine<'a, 'mir, 'tcx>>
                     );
                 }
             }
-            Scalar::Bits { bits, size } => {
-                assert_eq!(size as u64, op.layout.size.bytes());
-                bits
-            }
+            Ok(data) =>
+                data
         };
         // Now compare. This is slightly subtle because this is a special "wrap-around" range.
         if wrapping_range_contains(&layout.valid_range, bits) {
@@ -505,8 +526,8 @@ impl<'rt, 'a, 'mir, 'tcx, M: Machine<'a, 'mir, 'tcx>>
     fn visit_aggregate(
         &mut self,
         op: OpTy<'tcx, M::PointerTag>,
-        fields: impl Iterator<Item=EvalResult<'tcx, Self::V>>,
-    ) -> EvalResult<'tcx> {
+        fields: impl Iterator<Item=InterpResult<'tcx, Self::V>>,
+    ) -> InterpResult<'tcx> {
         match op.layout.ty.sty {
             ty::Str => {
                 let mplace = op.to_mem_place(); // strings are never immediate
@@ -538,7 +559,7 @@ impl<'rt, 'a, 'mir, 'tcx, M: Machine<'a, 'mir, 'tcx>>
                 // This is the size in bytes of the whole array.
                 let size = ty_size * len;
 
-                let ptr = mplace.ptr.to_ptr()?;
+                let ptr = self.ecx.force_ptr(mplace.ptr)?;
 
                 // NOTE: Keep this in sync with the handling of integer and float
                 // types above, in `visit_primitive`.
@@ -561,7 +582,7 @@ impl<'rt, 'a, 'mir, 'tcx, M: Machine<'a, 'mir, 'tcx>>
                     Err(err) => {
                         // For some errors we might be able to provide extra information
                         match err.kind {
-                            EvalErrorKind::ReadUndefBytes(offset) => {
+                            InterpError::ReadUndefBytes(offset) => {
                                 // Some byte was undefined, determine which
                                 // element that byte belongs to so we can
                                 // provide an index.
@@ -586,21 +607,21 @@ impl<'rt, 'a, 'mir, 'tcx, M: Machine<'a, 'mir, 'tcx>>
     }
 }
 
-impl<'a, 'mir, 'tcx, M: Machine<'a, 'mir, 'tcx>> EvalContext<'a, 'mir, 'tcx, M> {
-    /// This function checks the data at `op`.  `op` is assumed to cover valid memory if it
+impl<'mir, 'tcx, M: Machine<'mir, 'tcx>> InterpretCx<'mir, 'tcx, M> {
+    /// This function checks the data at `op`. `op` is assumed to cover valid memory if it
     /// is an indirect operand.
     /// It will error if the bits at the destination do not match the ones described by the layout.
     ///
-    /// `ref_tracking` can be None to avoid recursive checking below references.
+    /// `ref_tracking` can be `None` to avoid recursive checking below references.
     /// This also toggles between "run-time" (no recursion) and "compile-time" (with recursion)
     /// validation (e.g., pointer values are fine in integers at runtime).
     pub fn validate_operand(
         &self,
         op: OpTy<'tcx, M::PointerTag>,
         path: Vec<PathElem>,
-        ref_tracking: Option<&mut RefTracking<'tcx, M::PointerTag>>,
+        ref_tracking: Option<&mut RefTracking<MPlaceTy<'tcx, M::PointerTag>>>,
         const_mode: bool,
-    ) -> EvalResult<'tcx> {
+    ) -> InterpResult<'tcx> {
         trace!("validate_operand: {:?}, {:?}", *op, op.layout.ty);
 
         // Construct a visitor

@@ -1,4 +1,4 @@
-use indexed_vec::{Idx, IndexVec};
+use crate::indexed_vec::{Idx, IndexVec};
 use smallvec::SmallVec;
 use std::fmt;
 use std::iter;
@@ -27,7 +27,7 @@ pub struct BitSet<T: Idx> {
 }
 
 impl<T: Idx> BitSet<T> {
-    /// Create a new, empty bitset with a given `domain_size`.
+    /// Creates a new, empty bitset with a given `domain_size`.
     #[inline]
     pub fn new_empty(domain_size: usize) -> BitSet<T> {
         let num_words = num_words(domain_size);
@@ -38,7 +38,7 @@ impl<T: Idx> BitSet<T> {
         }
     }
 
-    /// Create a new, filled bitset with a given `domain_size`.
+    /// Creates a new, filled bitset with a given `domain_size`.
     #[inline]
     pub fn new_filled(domain_size: usize) -> BitSet<T> {
         let num_words = num_words(domain_size);
@@ -51,7 +51,7 @@ impl<T: Idx> BitSet<T> {
         result
     }
 
-    /// Get the domain size.
+    /// Gets the domain size.
     pub fn domain_size(&self) -> usize {
         self.domain_size
     }
@@ -85,7 +85,7 @@ impl<T: Idx> BitSet<T> {
         self.words.iter().map(|e| e.count_ones() as usize).sum()
     }
 
-    /// True if `self` contains `elem`.
+    /// Returns `true` if `self` contains `elem`.
     #[inline]
     pub fn contains(&self, elem: T) -> bool {
         assert!(elem.index() < self.domain_size);
@@ -106,7 +106,7 @@ impl<T: Idx> BitSet<T> {
         self.words.iter().all(|a| *a == 0)
     }
 
-    /// Insert `elem`. Returns true if the set has changed.
+    /// Insert `elem`. Returns whether the set has changed.
     #[inline]
     pub fn insert(&mut self, elem: T) -> bool {
         assert!(elem.index() < self.domain_size);
@@ -126,7 +126,7 @@ impl<T: Idx> BitSet<T> {
         self.clear_excess_bits();
     }
 
-    /// Returns true if the set has changed.
+    /// Returns `true` if the set has changed.
     #[inline]
     pub fn remove(&mut self, elem: T) -> bool {
         assert!(elem.index() < self.domain_size);
@@ -138,26 +138,26 @@ impl<T: Idx> BitSet<T> {
         new_word != word
     }
 
-    /// Set `self = self | other` and return true if `self` changed
+    /// Sets `self = self | other` and returns `true` if `self` changed
     /// (i.e., if new bits were added).
     pub fn union(&mut self, other: &impl UnionIntoBitSet<T>) -> bool {
         other.union_into(self)
     }
 
-    /// Set `self = self - other` and return true if `self` changed.
+    /// Sets `self = self - other` and returns `true` if `self` changed.
     /// (i.e., if any bits were removed).
     pub fn subtract(&mut self, other: &impl SubtractFromBitSet<T>) -> bool {
         other.subtract_from(self)
     }
 
-    /// Set `self = self & other` and return true if `self` changed.
+    /// Sets `self = self & other` and return `true` if `self` changed.
     /// (i.e., if any bits were removed).
     pub fn intersect(&mut self, other: &BitSet<T>) -> bool {
         assert_eq!(self.domain_size, other.domain_size);
         bitwise(&mut self.words, &other.words, |a, b| { a & b })
     }
 
-    /// Get a slice of the underlying words.
+    /// Gets a slice of the underlying words.
     pub fn words(&self) -> &[Word] {
         &self.words
     }
@@ -208,7 +208,7 @@ impl<T: Idx> SubtractFromBitSet<T> for BitSet<T> {
 }
 
 impl<T: Idx> fmt::Debug for BitSet<T> {
-    fn fmt(&self, w: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, w: &mut fmt::Formatter<'_>) -> fmt::Result {
         w.debug_list()
          .entries(self.iter())
          .finish()
@@ -366,7 +366,7 @@ impl<T: Idx> SparseBitSet<T> {
         dense
     }
 
-    fn iter(&self) -> slice::Iter<T> {
+    fn iter(&self) -> slice::Iter<'_, T> {
         self.elems.iter()
     }
 }
@@ -536,7 +536,7 @@ impl<T: Idx> HybridBitSet<T> {
         }
     }
 
-    pub fn iter(&self) -> HybridIter<T> {
+    pub fn iter(&self) -> HybridIter<'_, T> {
         match self {
             HybridBitSet::Sparse(sparse) => HybridIter::Sparse(sparse.iter()),
             HybridBitSet::Dense(dense) => HybridIter::Dense(dense.iter()),
@@ -607,11 +607,11 @@ impl<T: Idx> GrowableBitSet<T> {
         GrowableBitSet { bit_set: BitSet::new_empty(0) }
     }
 
-    pub fn with_capacity(bits: usize) -> GrowableBitSet<T> {
-        GrowableBitSet { bit_set: BitSet::new_empty(bits) }
+    pub fn with_capacity(capacity: usize) -> GrowableBitSet<T> {
+        GrowableBitSet { bit_set: BitSet::new_empty(capacity) }
     }
 
-    /// Returns true if the set has changed.
+    /// Returns `true` if the set has changed.
     #[inline]
     pub fn insert(&mut self, elem: T) -> bool {
         self.ensure(elem.index() + 1);
@@ -636,7 +636,7 @@ impl<T: Idx> GrowableBitSet<T> {
 ///
 /// All operations that involve a row and/or column index will panic if the
 /// index exceeds the relevant bound.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq, RustcDecodable, RustcEncodable)]
 pub struct BitMatrix<R: Idx, C: Idx> {
     num_rows: usize,
     num_columns: usize,
@@ -645,7 +645,7 @@ pub struct BitMatrix<R: Idx, C: Idx> {
 }
 
 impl<R: Idx, C: Idx> BitMatrix<R, C> {
-    /// Create a new `rows x columns` matrix, initially empty.
+    /// Creates a new `rows x columns` matrix, initially empty.
     pub fn new(num_rows: usize, num_columns: usize) -> BitMatrix<R, C> {
         // For every element, we need one bit for every other
         // element. Round up to an even number of words.
@@ -658,6 +658,23 @@ impl<R: Idx, C: Idx> BitMatrix<R, C> {
         }
     }
 
+    /// Creates a new matrix, with `row` used as the value for every row.
+    pub fn from_row_n(row: &BitSet<C>, num_rows: usize) -> BitMatrix<R, C> {
+        let num_columns = row.domain_size();
+        let words_per_row = num_words(num_columns);
+        assert_eq!(words_per_row, row.words().len());
+        BitMatrix {
+            num_rows,
+            num_columns,
+            words: iter::repeat(row.words()).take(num_rows).flatten().cloned().collect(),
+            marker: PhantomData,
+        }
+    }
+
+    pub fn rows(&self) -> impl Iterator<Item = R> {
+        (0..self.num_rows).map(R::new)
+    }
+
     /// The range of bits for a given row.
     fn range(&self, row: R) -> (usize, usize) {
         let words_per_row = num_words(self.num_columns);
@@ -668,7 +685,7 @@ impl<R: Idx, C: Idx> BitMatrix<R, C> {
     /// Sets the cell at `(row, column)` to true. Put another way, insert
     /// `column` to the bitset for `row`.
     ///
-    /// Returns true if this changed the matrix, and false otherwise.
+    /// Returns `true` if this changed the matrix.
     pub fn insert(&mut self, row: R, column: C) -> bool {
         assert!(row.index() < self.num_rows && column.index() < self.num_columns);
         let (start, _) = self.range(row);
@@ -691,7 +708,7 @@ impl<R: Idx, C: Idx> BitMatrix<R, C> {
         (self.words[start + word_index] & mask) != 0
     }
 
-    /// Returns those indices that are true in rows `a` and `b`.  This
+    /// Returns those indices that are true in rows `a` and `b`. This
     /// is an O(n) operation where `n` is the number of elements
     /// (somewhat independent from the actual size of the
     /// intersection, in particular).
@@ -715,8 +732,8 @@ impl<R: Idx, C: Idx> BitMatrix<R, C> {
         result
     }
 
-    /// Add the bits from row `read` to the bits from row `write`,
-    /// return true if anything changed.
+    /// Adds the bits from row `read` to the bits from row `write`, and
+    /// returns `true` if anything changed.
     ///
     /// This is used when computing transitive reachability because if
     /// you have an edge `write -> read`, because in that case
@@ -737,6 +754,49 @@ impl<R: Idx, C: Idx> BitMatrix<R, C> {
         changed
     }
 
+    /// Adds the bits from `with` to the bits from row `write`, and
+    /// returns `true` if anything changed.
+    pub fn union_row_with(&mut self, with: &BitSet<C>, write: R) -> bool {
+        assert!(write.index() < self.num_rows);
+        assert_eq!(with.domain_size(), self.num_columns);
+        let (write_start, write_end) = self.range(write);
+        let mut changed = false;
+        for (read_index, write_index) in (0..with.words().len()).zip(write_start..write_end) {
+            let word = self.words[write_index];
+            let new_word = word | with.words()[read_index];
+            self.words[write_index] = new_word;
+            changed |= word != new_word;
+        }
+        changed
+    }
+
+    /// Sets every cell in `row` to true.
+    pub fn insert_all_into_row(&mut self, row: R) {
+        assert!(row.index() < self.num_rows);
+        let (start, end) = self.range(row);
+        let words = &mut self.words[..];
+        for index in start..end {
+            words[index] = !0;
+        }
+        self.clear_excess_bits(row);
+    }
+
+    /// Clear excess bits in the final word of the row.
+    fn clear_excess_bits(&mut self, row: R) {
+        let num_bits_in_final_word = self.num_columns % WORD_BITS;
+        if num_bits_in_final_word > 0 {
+            let mask = (1 << num_bits_in_final_word) - 1;
+            let (_, end) = self.range(row);
+            let final_word_idx = end - 1;
+            self.words[final_word_idx] &= mask;
+        }
+    }
+
+    /// Gets a slice of the underlying words.
+    pub fn words(&self) -> &[Word] {
+        &self.words
+    }
+
     /// Iterates through all the columns set to true in a given row of
     /// the matrix.
     pub fn iter<'a>(&'a self, row: R) -> BitIter<'a, C> {
@@ -747,6 +807,12 @@ impl<R: Idx, C: Idx> BitMatrix<R, C> {
             iter: self.words[start..end].iter().enumerate(),
             marker: PhantomData,
         }
+    }
+
+    /// Returns the number of elements in `row`.
+    pub fn count(&self, row: R) -> usize {
+        let (start, end) = self.range(row);
+        self.words[start..end].iter().map(|e| e.count_ones() as usize).sum()
     }
 }
 
@@ -772,7 +838,7 @@ where
 }
 
 impl<R: Idx, C: Idx> SparseBitMatrix<R, C> {
-    /// Create a new empty sparse bit matrix with no rows or columns.
+    /// Creates a new empty sparse bit matrix with no rows or columns.
     pub fn new(num_columns: usize) -> Self {
         Self {
             num_columns,
@@ -793,7 +859,7 @@ impl<R: Idx, C: Idx> SparseBitMatrix<R, C> {
     /// Sets the cell at `(row, column)` to true. Put another way, insert
     /// `column` to the bitset for `row`.
     ///
-    /// Returns true if this changed the matrix, and false otherwise.
+    /// Returns `true` if this changed the matrix.
     pub fn insert(&mut self, row: R, column: C) -> bool {
         self.ensure_row(row).insert(column)
     }
@@ -806,8 +872,8 @@ impl<R: Idx, C: Idx> SparseBitMatrix<R, C> {
         self.row(row).map_or(false, |r| r.contains(column))
     }
 
-    /// Add the bits from row `read` to the bits from row `write`,
-    /// return true if anything changed.
+    /// Adds the bits from row `read` to the bits from row `write`, and
+    /// returns `true` if anything changed.
     ///
     /// This is used when computing transitive reachability because if
     /// you have an edge `write -> read`, because in that case
@@ -1057,6 +1123,7 @@ fn matrix_iter() {
     matrix.insert(2, 99);
     matrix.insert(4, 0);
     matrix.union_rows(3, 5);
+    matrix.insert_all_into_row(6);
 
     let expected = [99];
     let mut iter = expected.iter();
@@ -1068,6 +1135,7 @@ fn matrix_iter() {
 
     let expected = [22, 75];
     let mut iter = expected.iter();
+    assert_eq!(matrix.count(3), expected.len());
     for i in matrix.iter(3) {
         let j = *iter.next().unwrap();
         assert_eq!(i, j);
@@ -1076,6 +1144,7 @@ fn matrix_iter() {
 
     let expected = [0];
     let mut iter = expected.iter();
+    assert_eq!(matrix.count(4), expected.len());
     for i in matrix.iter(4) {
         let j = *iter.next().unwrap();
         assert_eq!(i, j);
@@ -1084,11 +1153,24 @@ fn matrix_iter() {
 
     let expected = [22, 75];
     let mut iter = expected.iter();
+    assert_eq!(matrix.count(5), expected.len());
     for i in matrix.iter(5) {
         let j = *iter.next().unwrap();
         assert_eq!(i, j);
     }
     assert!(iter.next().is_none());
+
+    assert_eq!(matrix.count(6), 100);
+    let mut count = 0;
+    for (idx, i) in matrix.iter(6).enumerate() {
+        assert_eq!(idx, i);
+        count += 1;
+    }
+    assert_eq!(count, 100);
+
+    if let Some(i) = matrix.iter(7).next() {
+        panic!("expected no elements in row, but contains element {:?}", i);
+    }
 }
 
 #[test]

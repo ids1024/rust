@@ -149,6 +149,26 @@ error: const items should never be #[no_mangle]
   |
 ```
 
+## overflowing-literals
+
+This lint detects literal out of range for its type. Some
+example code that triggers this lint:
+
+```rust,compile_fail
+let x: u8 = 1000;
+```
+
+This will produce:
+
+```text
+error: literal out of range for u8
+ --> src/main.rs:2:17
+  |
+2 |     let x: u8 = 1000;
+  |                 ^^^^
+  |
+```
+
 ## parenthesized-params-in-types-and-modules
 
 This lint detects incorrect parentheses. Some example code that triggers this
@@ -201,45 +221,4 @@ error: invalid `crate_type` value
 1 | #![crate_type="lol"]
   | ^^^^^^^^^^^^^^^^^^^^
   |
-```
-
-## incoherent-fundamental-impls
-
-This lint detects potentially-conflicting impls that were erroneously allowed. Some
-example code that triggers this lint:
-
-```rust,ignore
-pub trait Trait1<X> {
-    type Output;
-}
-
-pub trait Trait2<X> {}
-
-pub struct A;
-
-impl<X, T> Trait1<X> for T where T: Trait2<X> {
-    type Output = ();
-}
-
-impl<X> Trait1<Box<X>> for A {
-    type Output = i32;
-}
-```
-
-This will produce:
-
-```text
-error: conflicting implementations of trait `Trait1<std::boxed::Box<_>>` for type `A`: (E0119)
-  --> src/main.rs:13:1
-   |
-9  | impl<X, T> Trait1<X> for T where T: Trait2<X> {
-   | --------------------------------------------- first implementation here
-...
-13 | impl<X> Trait1<Box<X>> for A {
-   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^ conflicting implementation for `A`
-   |
-   = note: #[deny(incoherent_fundamental_impls)] on by default
-   = warning: this was previously accepted by the compiler but is being phased out; it will become a hard error in a future release!
-   = note: for more information, see issue #46205 <https://github.com/rust-lang/rust/issues/46205>
-   = note: downstream crates may implement trait `Trait2<std::boxed::Box<_>>` for type `A`
 ```

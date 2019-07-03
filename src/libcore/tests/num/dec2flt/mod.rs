@@ -31,6 +31,7 @@ fn ordinary() {
     test_literal!(0.1);
     test_literal!(12345.);
     test_literal!(0.9999999);
+    #[cfg(not(miri))] // Miri is too slow
     test_literal!(2.2250738585072014e-308);
 }
 
@@ -52,6 +53,7 @@ fn large() {
 }
 
 #[test]
+#[cfg(not(miri))] // Miri is too slow
 fn subnormals() {
     test_literal!(5e-324);
     test_literal!(91e-324);
@@ -63,6 +65,7 @@ fn subnormals() {
 }
 
 #[test]
+#[cfg(not(miri))] // Miri is too slow
 fn infinity() {
     test_literal!(1e400);
     test_literal!(1e309);
@@ -75,6 +78,7 @@ fn zero() {
     test_literal!(0.0);
     test_literal!(1e-325);
     test_literal!(1e-326);
+    #[cfg(not(miri))] // Miri is too slow
     test_literal!(1e-500);
 }
 

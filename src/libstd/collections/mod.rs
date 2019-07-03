@@ -150,10 +150,9 @@
 //! Any `with_capacity` constructor will instruct the collection to allocate
 //! enough space for the specified number of elements. Ideally this will be for
 //! exactly that many elements, but some implementation details may prevent
-//! this. [`Vec`] and [`VecDeque`] can be relied on to allocate exactly the
-//! requested amount, though. Use `with_capacity` when you know exactly how many
-//! elements will be inserted, or at least have a reasonable upper-bound on that
-//! number.
+//! this. See collection-specific documentation for details. In general, use
+//! `with_capacity` when you know exactly how many elements will be inserted, or
+//! at least have a reasonable upper-bound on that number.
 //!
 //! When anticipating a large influx of elements, the `reserve` family of
 //! methods can be used to hint to the collection how much room it should make
@@ -323,8 +322,8 @@
 //! // A client of the bar. They have a blood alcohol level.
 //! struct Person { blood_alcohol: f32 }
 //!
-//! // All the orders made to the bar, by client id.
-//! let orders = vec![1,2,1,2,3,4,1,2,2,3,4,1,1,1];
+//! // All the orders made to the bar, by client ID.
+//! let orders = vec![1, 2, 1, 2, 3, 4, 1, 2, 2, 3, 4, 1, 1, 1];
 //!
 //! // Our clients.
 //! let mut blood_alcohol = BTreeMap::new();
@@ -412,7 +411,7 @@
 #[stable(feature = "rust1", since = "1.0.0")]
 #[rustc_deprecated(reason = "moved to `std::ops::Bound`", since = "1.26.0")]
 #[doc(hidden)]
-pub use ops::Bound;
+pub use crate::ops::Bound;
 #[stable(feature = "rust1", since = "1.0.0")]
 pub use alloc_crate::collections::{BinaryHeap, BTreeMap, BTreeSet};
 #[stable(feature = "rust1", since = "1.0.0")]

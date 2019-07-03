@@ -1,7 +1,7 @@
 //! # Lattice Variables
 //!
 //! This file contains generic code for operating on inference variables
-//! that are characterized by an upper- and lower-bound.  The logic and
+//! that are characterized by an upper- and lower-bound. The logic and
 //! reasoning is explained in detail in the large comment in `infer.rs`.
 //!
 //! The code in here is defined quite generically so that it can be
@@ -13,22 +13,22 @@
 //!
 //! Although all the functions are generic, we generally write the
 //! comments in a way that is specific to type variables and the LUB
-//! operation.  It's just easier that way.
+//! operation. It's just easier that way.
 //!
 //! In general all of the functions are defined parametrically
 //! over a `LatticeValue`, which is a value defined with respect to
 //! a lattice.
 
 use super::InferCtxt;
-use super::type_variable::TypeVariableOrigin;
+use super::type_variable::{TypeVariableOrigin, TypeVariableOriginKind};
 
-use traits::ObligationCause;
-use ty::TyVar;
-use ty::{self, Ty};
-use ty::relate::{RelateResult, TypeRelation};
+use crate::traits::ObligationCause;
+use crate::ty::TyVar;
+use crate::ty::{self, Ty};
+use crate::ty::relate::{RelateResult, TypeRelation};
 
-pub trait LatticeDir<'f, 'gcx: 'f+'tcx, 'tcx: 'f> : TypeRelation<'f, 'gcx, 'tcx> {
-    fn infcx(&self) -> &'f InferCtxt<'f, 'gcx, 'tcx>;
+pub trait LatticeDir<'f, 'tcx>: TypeRelation<'tcx> {
+    fn infcx(&self) -> &'f InferCtxt<'f, 'tcx>;
 
     fn cause(&self) -> &ObligationCause<'tcx>;
 
@@ -41,11 +41,13 @@ pub trait LatticeDir<'f, 'gcx: 'f+'tcx, 'tcx: 'f> : TypeRelation<'f, 'gcx, 'tcx>
     fn relate_bound(&mut self, v: Ty<'tcx>, a: Ty<'tcx>, b: Ty<'tcx>) -> RelateResult<'tcx, ()>;
 }
 
-pub fn super_lattice_tys<'a, 'gcx, 'tcx, L>(this: &mut L,
-                                            a: Ty<'tcx>,
-                                            b: Ty<'tcx>)
-                                            -> RelateResult<'tcx, Ty<'tcx>>
-    where L: LatticeDir<'a, 'gcx, 'tcx>, 'gcx: 'a+'tcx, 'tcx: 'a
+pub fn super_lattice_tys<'a, 'tcx: 'a, L>(
+    this: &mut L,
+    a: Ty<'tcx>,
+    b: Ty<'tcx>,
+) -> RelateResult<'tcx, Ty<'tcx>>
+where
+    L: LatticeDir<'a, 'tcx>,
 {
     debug!("{}.lattice_tys({:?}, {:?})",
            this.tag(),
@@ -79,12 +81,18 @@ pub fn super_lattice_tys<'a, 'gcx, 'tcx, L>(this: &mut L,
         // iterate on the subtype obligations that are returned, but I
         // think this suffices. -nmatsakis
         (&ty::Infer(TyVar(..)), _) => {
-            let v = infcx.next_ty_var(TypeVariableOrigin::LatticeVariable(this.cause().span));
+            let v = infcx.next_ty_var(TypeVariableOrigin {
+                kind: TypeVariableOriginKind::LatticeVariable,
+                span: this.cause().span,
+            });
             this.relate_bound(v, b, a)?;
             Ok(v)
         }
         (_, &ty::Infer(TyVar(..))) => {
-            let v = infcx.next_ty_var(TypeVariableOrigin::LatticeVariable(this.cause().span));
+            let v = infcx.next_ty_var(TypeVariableOrigin {
+                kind: TypeVariableOriginKind::LatticeVariable,
+                span: this.cause().span,
+            });
             this.relate_bound(v, a, b)?;
             Ok(v)
         }

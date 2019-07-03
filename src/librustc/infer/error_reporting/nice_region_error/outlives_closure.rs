@@ -1,15 +1,15 @@
 //! Error Reporting for Anonymous Region Lifetime Errors
 //! where both the regions are anonymous.
 
-use infer::error_reporting::nice_region_error::NiceRegionError;
-use infer::SubregionOrigin;
-use ty::RegionKind;
-use hir::{Expr, ExprKind::Closure};
-use hir::Node;
-use util::common::ErrorReported;
-use infer::lexical_region_resolve::RegionResolutionError::SubSupConflict;
+use crate::infer::error_reporting::nice_region_error::NiceRegionError;
+use crate::infer::SubregionOrigin;
+use crate::ty::RegionKind;
+use crate::hir::{Expr, ExprKind::Closure};
+use crate::hir::Node;
+use crate::util::common::ErrorReported;
+use crate::infer::lexical_region_resolve::RegionResolutionError::SubSupConflict;
 
-impl<'a, 'gcx, 'tcx> NiceRegionError<'a, 'gcx, 'tcx> {
+impl<'a, 'tcx> NiceRegionError<'a, 'tcx> {
     /// Print the error message for lifetime errors when binding escapes a closure.
     ///
     /// Consider a case where we have
@@ -47,15 +47,15 @@ impl<'a, 'gcx, 'tcx> NiceRegionError<'a, 'gcx, 'tcx> {
             // closure, provide a specific message pointing this out.
             if let (&SubregionOrigin::BindingTypeIsNotValidAtDecl(ref external_span),
                     &RegionKind::ReFree(ref free_region)) = (&sub_origin, sup_region) {
-                let hir = &self.tcx.hir();
-                if let Some(node_id) = hir.as_local_node_id(free_region.scope) {
+                let hir = &self.tcx().hir();
+                if let Some(hir_id) = hir.as_local_hir_id(free_region.scope) {
                     if let Node::Expr(Expr {
                         node: Closure(_, _, _, closure_span, None),
                         ..
-                    }) = hir.get(node_id) {
+                    }) = hir.get_by_hir_id(hir_id) {
                         let sup_sp = sup_origin.span();
                         let origin_sp = origin.span();
-                        let mut err = self.tcx.sess.struct_span_err(
+                        let mut err = self.tcx().sess.struct_span_err(
                             sup_sp,
                             "borrowed data cannot be stored outside of its closure");
                         err.span_label(sup_sp, "cannot be stored outside of its closure");
@@ -109,4 +109,3 @@ impl<'a, 'gcx, 'tcx> NiceRegionError<'a, 'gcx, 'tcx> {
         None
     }
 }
-

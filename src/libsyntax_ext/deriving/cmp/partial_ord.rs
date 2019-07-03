@@ -1,24 +1,24 @@
-pub use self::OrderingOp::*;
+pub use OrderingOp::*;
 
-use deriving::{path_local, pathvec_std, path_std};
-use deriving::generic::*;
-use deriving::generic::ty::*;
+use crate::deriving::{path_local, pathvec_std, path_std};
+use crate::deriving::generic::*;
+use crate::deriving::generic::ty::*;
 
 use syntax::ast::{self, BinOpKind, Expr, MetaItem};
 use syntax::ext::base::{Annotatable, ExtCtxt};
 use syntax::ext::build::AstBuilder;
 use syntax::ptr::P;
-use syntax::symbol::Symbol;
+use syntax::symbol::{sym, Symbol};
 use syntax_pos::Span;
 
-pub fn expand_deriving_partial_ord(cx: &mut ExtCtxt,
+pub fn expand_deriving_partial_ord(cx: &mut ExtCtxt<'_>,
                                    span: Span,
                                    mitem: &MetaItem,
                                    item: &Annotatable,
                                    push: &mut dyn FnMut(Annotatable)) {
     macro_rules! md {
         ($name:expr, $op:expr, $equal:expr) => { {
-            let inline = cx.meta_word(span, Symbol::intern("inline"));
+            let inline = cx.meta_word(span, sym::inline);
             let attrs = vec![cx.attribute(span, inline)];
             MethodDef {
                 name: $name,
@@ -42,7 +42,7 @@ pub fn expand_deriving_partial_ord(cx: &mut ExtCtxt,
                                     vec![Box::new(ordering_ty)],
                                     PathKind::Std));
 
-    let inline = cx.meta_word(span, Symbol::intern("inline"));
+    let inline = cx.meta_word(span, sym::inline);
     let attrs = vec![cx.attribute(span, inline)];
 
     let partial_cmp_def = MethodDef {
@@ -95,7 +95,7 @@ pub enum OrderingOp {
     GeOp,
 }
 
-pub fn some_ordering_collapsed(cx: &mut ExtCtxt,
+pub fn some_ordering_collapsed(cx: &mut ExtCtxt<'_>,
                                span: Span,
                                op: OrderingOp,
                                self_arg_tags: &[ast::Ident])
@@ -112,13 +112,13 @@ pub fn some_ordering_collapsed(cx: &mut ExtCtxt,
     cx.expr_method_call(span, lft, cx.ident_of(op_str), vec![rgt])
 }
 
-pub fn cs_partial_cmp(cx: &mut ExtCtxt, span: Span, substr: &Substructure) -> P<Expr> {
+pub fn cs_partial_cmp(cx: &mut ExtCtxt<'_>, span: Span, substr: &Substructure<'_>) -> P<Expr> {
     let test_id = cx.ident_of("cmp").gensym();
-    let ordering = cx.path_global(span, cx.std_path(&["cmp", "Ordering", "Equal"]));
+    let ordering = cx.path_global(span, cx.std_path(&[sym::cmp, sym::Ordering, sym::Equal]));
     let ordering_expr = cx.expr_path(ordering.clone());
     let equals_expr = cx.expr_some(span, ordering_expr);
 
-    let partial_cmp_path = cx.std_path(&["cmp", "PartialOrd", "partial_cmp"]);
+    let partial_cmp_path = cx.std_path(&[sym::cmp, sym::PartialOrd, sym::partial_cmp]);
 
     // Builds:
     //
@@ -143,8 +143,8 @@ pub fn cs_partial_cmp(cx: &mut ExtCtxt, span: Span, substr: &Substructure) -> P<
                 // }
 
                 let new = {
-                    let other_f = match (other_fs.len(), other_fs.get(0)) {
-                        (1, Some(o_f)) => o_f,
+                    let other_f = match other_fs {
+                        [o_f] => o_f,
                                 _ => {
                                     cx.span_bug(span,
                                         "not exactly 2 arguments in `derive(PartialOrd)`")
@@ -184,23 +184,24 @@ pub fn cs_partial_cmp(cx: &mut ExtCtxt, span: Span, substr: &Substructure) -> P<
 /// Strict inequality.
 fn cs_op(less: bool,
          inclusive: bool,
-         cx: &mut ExtCtxt,
+         cx: &mut ExtCtxt<'_>,
          span: Span,
-         substr: &Substructure) -> P<Expr> {
-    let ordering_path = |cx: &mut ExtCtxt, name: &str| {
-        cx.expr_path(cx.path_global(span, cx.std_path(&["cmp", "Ordering", name])))
+         substr: &Substructure<'_>) -> P<Expr> {
+    let ordering_path = |cx: &mut ExtCtxt<'_>, name: &str| {
+        cx.expr_path(cx.path_global(
+            span, cx.std_path(&[sym::cmp, sym::Ordering, Symbol::intern(name)])))
     };
 
-    let par_cmp = |cx: &mut ExtCtxt, span, self_f: P<Expr>, other_fs: &[P<Expr>], default| {
-        let other_f = match (other_fs.len(), other_fs.get(0)) {
-            (1, Some(o_f)) => o_f,
+    let par_cmp = |cx: &mut ExtCtxt<'_>, span, self_f: P<Expr>, other_fs: &[P<Expr>], default| {
+        let other_f = match other_fs {
+            [o_f] => o_f,
             _ => cx.span_bug(span, "not exactly 2 arguments in `derive(PartialOrd)`"),
         };
 
         // `PartialOrd::partial_cmp(self.fi, other.fi)`
-        let cmp_path = cx.expr_path(cx.path_global(span, cx.std_path(&["cmp",
-                                                                       "PartialOrd",
-                                                                       "partial_cmp"])));
+        let cmp_path = cx.expr_path(cx.path_global(span, cx.std_path(&[sym::cmp,
+                                                                       sym::PartialOrd,
+                                                                       sym::partial_cmp])));
         let cmp = cx.expr_call(span,
                                cmp_path,
                                vec![cx.expr_addr_of(span, self_f),
@@ -208,9 +209,9 @@ fn cs_op(less: bool,
 
         let default = ordering_path(cx, default);
         // `Option::unwrap_or(_, Ordering::Equal)`
-        let unwrap_path = cx.expr_path(cx.path_global(span, cx.std_path(&["option",
-                                                                          "Option",
-                                                                          "unwrap_or"])));
+        let unwrap_path = cx.expr_path(cx.path_global(span, cx.std_path(&[sym::option,
+                                                                          sym::Option,
+                                                                          sym::unwrap_or])));
         cx.expr_call(span, unwrap_path, vec![cmp, default])
     };
 
@@ -256,9 +257,9 @@ fn cs_op(less: bool,
 
             // `Ordering::then_with(Option::unwrap_or(..), ..)`
             let then_with_path = cx.expr_path(cx.path_global(span,
-                                                             cx.std_path(&["cmp",
-                                                                           "Ordering",
-                                                                           "then_with"])));
+                                                             cx.std_path(&[sym::cmp,
+                                                                           sym::Ordering,
+                                                                           sym::then_with])));
             cx.expr_call(span, then_with_path, vec![par_cmp, cx.lambda0(span, subexpr)])
         },
         |cx, args| {

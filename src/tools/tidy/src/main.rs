@@ -6,7 +6,6 @@
 
 #![deny(warnings)]
 
-extern crate tidy;
 use tidy::*;
 
 use std::process;

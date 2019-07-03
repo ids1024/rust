@@ -1,10 +1,11 @@
 //! impl char {}
 
-use slice;
-use str::from_utf8_unchecked_mut;
+use crate::slice;
+use crate::str::from_utf8_unchecked_mut;
+use crate::unicode::printable::is_printable;
+use crate::unicode::tables::{conversions, derived_property, general_category, property};
+
 use super::*;
-use unicode::printable::is_printable;
-use unicode::tables::{conversions, derived_property, general_category, property};
 
 #[lang = "char"]
 impl char {
@@ -189,10 +190,8 @@ impl char {
     /// An extended version of `escape_debug` that optionally permits escaping
     /// Extended Grapheme codepoints. This allows us to format characters like
     /// nonspacing marks better when they're at the start of a string.
-    #[doc(hidden)]
-    #[unstable(feature = "str_internals", issue = "0")]
     #[inline]
-    pub fn escape_debug_ext(self, escape_grapheme_extended: bool) -> EscapeDebug {
+    pub(crate) fn escape_debug_ext(self, escape_grapheme_extended: bool) -> EscapeDebug {
         let init_state = match self {
             '\t' => EscapeDefaultState::Backslash('t'),
             '\r' => EscapeDefaultState::Backslash('r'),
@@ -524,7 +523,7 @@ impl char {
         }
     }
 
-    /// Returns true if this `char` is an alphabetic code point, and false if not.
+    /// Returns `true` if this `char` is an alphabetic code point, and false if not.
     ///
     /// # Examples
     ///
@@ -548,7 +547,7 @@ impl char {
         }
     }
 
-    /// Returns true if this `char` satisfies the 'XID_Start' Unicode property, and false
+    /// Returns `true` if this `char` satisfies the 'XID_Start' Unicode property, and false
     /// otherwise.
     ///
     /// 'XID_Start' is a Unicode Derived Property specified in
@@ -562,7 +561,7 @@ impl char {
         derived_property::XID_Start(self)
     }
 
-    /// Returns true if this `char` satisfies the 'XID_Continue' Unicode property, and false
+    /// Returns `true` if this `char` satisfies the 'XID_Continue' Unicode property, and false
     /// otherwise.
     ///
     /// 'XID_Continue' is a Unicode Derived Property specified in
@@ -576,7 +575,7 @@ impl char {
         derived_property::XID_Continue(self)
     }
 
-    /// Returns true if this `char` is lowercase, and false otherwise.
+    /// Returns `true` if this `char` is lowercase.
     ///
     /// 'Lowercase' is defined according to the terms of the Unicode Derived Core
     /// Property `Lowercase`.
@@ -604,7 +603,7 @@ impl char {
         }
     }
 
-    /// Returns true if this `char` is uppercase, and false otherwise.
+    /// Returns `true` if this `char` is uppercase.
     ///
     /// 'Uppercase' is defined according to the terms of the Unicode Derived Core
     /// Property `Uppercase`.
@@ -632,7 +631,7 @@ impl char {
         }
     }
 
-    /// Returns true if this `char` is whitespace, and false otherwise.
+    /// Returns `true` if this `char` is whitespace.
     ///
     /// 'Whitespace' is defined according to the terms of the Unicode Derived Core
     /// Property `White_Space`.
@@ -659,7 +658,7 @@ impl char {
         }
     }
 
-    /// Returns true if this `char` is alphanumeric, and false otherwise.
+    /// Returns `true` if this `char` is alphanumeric.
     ///
     /// 'Alphanumeric'-ness is defined in terms of the Unicode General Categories
     /// 'Nd', 'Nl', 'No' and the Derived Core Property 'Alphabetic'.
@@ -684,7 +683,7 @@ impl char {
         self.is_alphabetic() || self.is_numeric()
     }
 
-    /// Returns true if this `char` is a control code point, and false otherwise.
+    /// Returns `true` if this `char` is a control code point.
     ///
     /// 'Control code point' is defined in terms of the Unicode General
     /// Category `Cc`.
@@ -704,7 +703,7 @@ impl char {
         general_category::Cc(self)
     }
 
-    /// Returns true if this `char` is an extended grapheme character, and false otherwise.
+    /// Returns `true` if this `char` is an extended grapheme character.
     ///
     /// 'Extended grapheme character' is defined in terms of the Unicode Shaping and Rendering
     /// Category `Grapheme_Extend`.
@@ -713,7 +712,7 @@ impl char {
         derived_property::Grapheme_Extend(self)
     }
 
-    /// Returns true if this `char` is numeric, and false otherwise.
+    /// Returns `true` if this `char` is numeric.
     ///
     /// 'Numeric'-ness is defined in terms of the Unicode General Categories
     /// 'Nd', 'Nl', 'No'.
@@ -1043,8 +1042,8 @@ impl char {
 
     /// Checks if the value is an ASCII alphabetic character:
     ///
-    /// - U+0041 'A' ... U+005A 'Z', or
-    /// - U+0061 'a' ... U+007A 'z'.
+    /// - U+0041 'A' ..= U+005A 'Z', or
+    /// - U+0061 'a' ..= U+007A 'z'.
     ///
     /// # Examples
     ///
@@ -1076,7 +1075,7 @@ impl char {
     }
 
     /// Checks if the value is an ASCII uppercase character:
-    /// U+0041 'A' ... U+005A 'Z'.
+    /// U+0041 'A' ..= U+005A 'Z'.
     ///
     /// # Examples
     ///
@@ -1108,7 +1107,7 @@ impl char {
     }
 
     /// Checks if the value is an ASCII lowercase character:
-    /// U+0061 'a' ... U+007A 'z'.
+    /// U+0061 'a' ..= U+007A 'z'.
     ///
     /// # Examples
     ///
@@ -1141,9 +1140,9 @@ impl char {
 
     /// Checks if the value is an ASCII alphanumeric character:
     ///
-    /// - U+0041 'A' ... U+005A 'Z', or
-    /// - U+0061 'a' ... U+007A 'z', or
-    /// - U+0030 '0' ... U+0039 '9'.
+    /// - U+0041 'A' ..= U+005A 'Z', or
+    /// - U+0061 'a' ..= U+007A 'z', or
+    /// - U+0030 '0' ..= U+0039 '9'.
     ///
     /// # Examples
     ///
@@ -1175,7 +1174,7 @@ impl char {
     }
 
     /// Checks if the value is an ASCII decimal digit:
-    /// U+0030 '0' ... U+0039 '9'.
+    /// U+0030 '0' ..= U+0039 '9'.
     ///
     /// # Examples
     ///
@@ -1208,9 +1207,9 @@ impl char {
 
     /// Checks if the value is an ASCII hexadecimal digit:
     ///
-    /// - U+0030 '0' ... U+0039 '9', or
-    /// - U+0041 'A' ... U+0046 'F', or
-    /// - U+0061 'a' ... U+0066 'f'.
+    /// - U+0030 '0' ..= U+0039 '9', or
+    /// - U+0041 'A' ..= U+0046 'F', or
+    /// - U+0061 'a' ..= U+0066 'f'.
     ///
     /// # Examples
     ///
@@ -1243,10 +1242,10 @@ impl char {
 
     /// Checks if the value is an ASCII punctuation character:
     ///
-    /// - U+0021 ... U+002F `! " # $ % & ' ( ) * + , - . /`, or
-    /// - U+003A ... U+0040 `: ; < = > ? @`, or
-    /// - U+005B ... U+0060 ``[ \ ] ^ _ ` ``, or
-    /// - U+007B ... U+007E `{ | } ~`
+    /// - U+0021 ..= U+002F `! " # $ % & ' ( ) * + , - . /`, or
+    /// - U+003A ..= U+0040 `: ; < = > ? @`, or
+    /// - U+005B ..= U+0060 ``[ \ ] ^ _ ` ``, or
+    /// - U+007B ..= U+007E `{ | } ~`
     ///
     /// # Examples
     ///
@@ -1278,7 +1277,7 @@ impl char {
     }
 
     /// Checks if the value is an ASCII graphic character:
-    /// U+0021 '!' ... U+007E '~'.
+    /// U+0021 '!' ..= U+007E '~'.
     ///
     /// # Examples
     ///
@@ -1359,7 +1358,7 @@ impl char {
     }
 
     /// Checks if the value is an ASCII control character:
-    /// U+0000 NUL ... U+001F UNIT SEPARATOR, or U+007F DELETE.
+    /// U+0000 NUL ..= U+001F UNIT SEPARATOR, or U+007F DELETE.
     /// Note that most ASCII whitespace characters are control
     /// characters, but SPACE is not.
     ///

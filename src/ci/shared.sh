@@ -5,6 +5,7 @@
 # marked as an executable file in git.
 
 # See http://unix.stackexchange.com/questions/82598
+# Duplicated in docker/dist-various-2/shared.sh
 function retry {
   echo "Attempting with retry:" "$@"
   local n=1
@@ -21,6 +22,24 @@ function retry {
       fi
     }
   done
+}
+
+function isCI {
+  [ "$CI" = "true" ] || [ "$TRAVIS" = "true" ] || [ "$TF_BUILD" = "True" ]
+}
+
+function isOSX {
+  [ "$TRAVIS_OS_NAME" = "osx" ] || [ "$AGENT_OS" = "Darwin" ]
+}
+
+function getCIBranch {
+  if [ "$TRAVIS" = "true" ]; then
+    echo "$TRAVIS_BRANCH"
+  elif [ "$APPVEYOR" = "True" ]; then
+    echo "$APPVEYOR_REPO_BRANCH"
+  else
+    echo "$BUILD_SOURCEBRANCHNAME"
+  fi;
 }
 
 if ! declare -F travis_fold; then

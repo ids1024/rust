@@ -1,4 +1,4 @@
-//! Platform-dependent platform abstraction
+//! Platform-dependent platform abstraction.
 //!
 //! The `std::sys` module is the abstracted interface through which
 //! `std` talks to the underlying operating system. It has different
@@ -22,7 +22,7 @@
 
 #![allow(missing_debug_implementations)]
 
-cfg_if! {
+cfg_if::cfg_if! {
     if #[cfg(unix)] {
         mod unix;
         pub use self::unix::*;
@@ -35,6 +35,9 @@ cfg_if! {
     } else if #[cfg(target_os = "redox")] {
         mod redox;
         pub use self::redox::*;
+    } else if #[cfg(target_os = "wasi")] {
+        mod wasi;
+        pub use self::wasi::*;
     } else if #[cfg(target_arch = "wasm32")] {
         mod wasm;
         pub use self::wasm::*;
@@ -51,9 +54,10 @@ cfg_if! {
 // Windows when we're compiling for Linux.
 
 #[cfg(rustdoc)]
-cfg_if! {
+cfg_if::cfg_if! {
     if #[cfg(any(unix, target_os = "redox"))] {
         // On unix we'll document what's already available
+        #[stable(feature = "rust1", since = "1.0.0")]
         pub use self::ext as unix_ext;
     } else if #[cfg(any(target_os = "cloudabi",
                         target_arch = "wasm32",
@@ -66,17 +70,18 @@ cfg_if! {
         pub mod unix_ext {}
     } else {
         // On other platforms like Windows document the bare bones of unix
-        use os::linux as platform;
+        use crate::os::linux as platform;
         #[path = "unix/ext/mod.rs"]
         pub mod unix_ext;
     }
 }
 
 #[cfg(rustdoc)]
-cfg_if! {
+cfg_if::cfg_if! {
     if #[cfg(windows)] {
         // On windows we'll just be documenting what's already available
         #[allow(missing_docs)]
+        #[stable(feature = "rust1", since = "1.0.0")]
         pub use self::ext as windows_ext;
     } else if #[cfg(any(target_os = "cloudabi",
                         target_arch = "wasm32",

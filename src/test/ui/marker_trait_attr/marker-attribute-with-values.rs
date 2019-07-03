@@ -1,16 +1,12 @@
 #![feature(marker_trait_attr)]
-#![feature(unrestricted_attribute_tokens)]
 
-#[marker(always)]
+#[marker(always)] //~ ERROR malformed `marker` attribute
 trait Marker1 {}
-//~^^ ERROR attribute must be of the form
 
-#[marker("never")]
+#[marker("never")] //~ ERROR malformed `marker` attribute
 trait Marker2 {}
-//~^^ ERROR attribute must be of the form
 
-#[marker(key = value)]
+#[marker(key = "value")] //~ ERROR malformed `marker` attribute
 trait Marker3 {}
-//~^^ ERROR expected unsuffixed literal or identifier, found value
 
 fn main() {}

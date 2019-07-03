@@ -1,4 +1,4 @@
-use hair::*;
+use crate::hair::*;
 
 #[derive(Debug, PartialEq)]
 pub enum Category {
@@ -45,9 +45,9 @@ impl Category {
             | ExprKind::ValueTypeAscription { .. } => Some(Category::Place),
 
             ExprKind::LogicalOp { .. }
-            | ExprKind::If { .. }
             | ExprKind::Match { .. }
             | ExprKind::NeverToAny { .. }
+            | ExprKind::Use { .. }
             | ExprKind::Call { .. } => Some(Category::Rvalue(RvalueFunc::Into)),
 
             ExprKind::Array { .. }
@@ -58,11 +58,7 @@ impl Category {
             | ExprKind::Binary { .. }
             | ExprKind::Box { .. }
             | ExprKind::Cast { .. }
-            | ExprKind::Use { .. }
-            | ExprKind::ReifyFnPointer { .. }
-            | ExprKind::ClosureFnPointer { .. }
-            | ExprKind::UnsafeFnPointer { .. }
-            | ExprKind::Unsize { .. }
+            | ExprKind::Pointer { .. }
             | ExprKind::Repeat { .. }
             | ExprKind::Borrow { .. }
             | ExprKind::Assign { .. }

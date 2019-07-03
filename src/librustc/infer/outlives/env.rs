@@ -1,10 +1,10 @@
-use infer::outlives::free_region_map::FreeRegionMap;
-use infer::{GenericKind, InferCtxt};
+use crate::infer::outlives::free_region_map::FreeRegionMap;
+use crate::infer::{GenericKind, InferCtxt};
+use crate::hir;
 use rustc_data_structures::fx::FxHashMap;
-use syntax::ast;
 use syntax_pos::Span;
-use traits::query::outlives_bounds::{self, OutlivesBound};
-use ty::{self, Ty};
+use crate::traits::query::outlives_bounds::{self, OutlivesBound};
+use crate::ty::{self, Ty};
 
 /// The `OutlivesEnvironment` collects information about what outlives
 /// what in a given type-checking setting. For example, if we have a
@@ -55,7 +55,7 @@ pub struct OutlivesEnvironment<'tcx> {
     // results when proving outlives obligations like `T: 'x` later
     // (e.g., if `T: 'x` must be proven within the body B1, then we
     // know it is true if either `'a: 'x` or `'b: 'x`).
-    region_bound_pairs_map: FxHashMap<ast::NodeId, RegionBoundPairs<'tcx>>,
+    region_bound_pairs_map: FxHashMap<hir::HirId, RegionBoundPairs<'tcx>>,
 
     // Used to compute `region_bound_pairs_map`: contains the set of
     // in-scope region-bound pairs thus far.
@@ -63,11 +63,11 @@ pub struct OutlivesEnvironment<'tcx> {
 }
 
 /// "Region-bound pairs" tracks outlives relations that are known to
-/// be true, either because of explicit where clauses like `T: 'a` or
+/// be true, either because of explicit where-clauses like `T: 'a` or
 /// because of implied bounds.
 pub type RegionBoundPairs<'tcx> = Vec<(ty::Region<'tcx>, GenericKind<'tcx>)>;
 
-impl<'a, 'gcx: 'tcx, 'tcx: 'a> OutlivesEnvironment<'tcx> {
+impl<'a, 'tcx> OutlivesEnvironment<'tcx> {
     pub fn new(param_env: ty::ParamEnv<'tcx>) -> Self {
         let mut env = OutlivesEnvironment {
             param_env,
@@ -87,7 +87,7 @@ impl<'a, 'gcx: 'tcx, 'tcx: 'a> OutlivesEnvironment<'tcx> {
     }
 
     /// Borrows current value of the `region_bound_pairs`.
-    pub fn region_bound_pairs_map(&self) -> &FxHashMap<ast::NodeId, RegionBoundPairs<'tcx>> {
+    pub fn region_bound_pairs_map(&self) -> &FxHashMap<hir::HirId, RegionBoundPairs<'tcx>> {
         &self.region_bound_pairs_map
     }
 
@@ -160,15 +160,15 @@ impl<'a, 'gcx: 'tcx, 'tcx: 'a> OutlivesEnvironment<'tcx> {
     /// Tests: `src/test/compile-fail/regions-free-region-ordering-*.rs`
     pub fn add_implied_bounds(
         &mut self,
-        infcx: &InferCtxt<'a, 'gcx, 'tcx>,
+        infcx: &InferCtxt<'a, 'tcx>,
         fn_sig_tys: &[Ty<'tcx>],
-        body_id: ast::NodeId,
+        body_id: hir::HirId,
         span: Span,
     ) {
         debug!("add_implied_bounds()");
 
         for &ty in fn_sig_tys {
-            let ty = infcx.resolve_type_vars_if_possible(&ty);
+            let ty = infcx.resolve_vars_if_possible(&ty);
             debug!("add_implied_bounds: ty = {}", ty);
             let implied_bounds = infcx.implied_outlives_bounds(self.param_env, body_id, ty, span);
             self.add_outlives_bounds(Some(infcx), implied_bounds)
@@ -176,7 +176,7 @@ impl<'a, 'gcx: 'tcx, 'tcx: 'a> OutlivesEnvironment<'tcx> {
     }
 
     /// Save the current set of region-bound pairs under the given `body_id`.
-    pub fn save_implied_bounds(&mut self, body_id: ast::NodeId) {
+    pub fn save_implied_bounds(&mut self, body_id: hir::HirId) {
         let old = self.region_bound_pairs_map.insert(
             body_id,
             self.region_bound_pairs_accum.clone(),
@@ -190,11 +190,8 @@ impl<'a, 'gcx: 'tcx, 'tcx: 'a> OutlivesEnvironment<'tcx> {
     /// contain inference variables, it must be supplied, in which
     /// case we will register "givens" on the inference context. (See
     /// `RegionConstraintData`.)
-    fn add_outlives_bounds<I>(
-        &mut self,
-        infcx: Option<&InferCtxt<'a, 'gcx, 'tcx>>,
-        outlives_bounds: I,
-    ) where
+    fn add_outlives_bounds<I>(&mut self, infcx: Option<&InferCtxt<'a, 'tcx>>, outlives_bounds: I)
+    where
         I: IntoIterator<Item = OutlivesBound<'tcx>>,
     {
         // Record relationships such as `T:'x` that don't go into the

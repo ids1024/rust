@@ -1,9 +1,9 @@
-use fmt;
-use io::{self, Error, ErrorKind};
-use net::{ToSocketAddrs, SocketAddr, Ipv4Addr, Ipv6Addr};
-use sys_common::net as net_imp;
-use sys_common::{AsInner, FromInner, IntoInner};
-use time::Duration;
+use crate::fmt;
+use crate::io::{self, Error, ErrorKind};
+use crate::net::{ToSocketAddrs, SocketAddr, Ipv4Addr, Ipv6Addr};
+use crate::sys_common::net as net_imp;
+use crate::sys_common::{AsInner, FromInner, IntoInner};
+use crate::time::Duration;
 
 /// A UDP socket.
 ///
@@ -69,7 +69,7 @@ impl UdpSocket {
     ///
     /// # Examples
     ///
-    /// Create a UDP socket bound to `127.0.0.1:3400`:
+    /// Creates a UDP socket bound to `127.0.0.1:3400`:
     ///
     /// ```no_run
     /// use std::net::UdpSocket;
@@ -77,7 +77,7 @@ impl UdpSocket {
     /// let socket = UdpSocket::bind("127.0.0.1:3400").expect("couldn't bind to address");
     /// ```
     ///
-    /// Create a UDP socket bound to `127.0.0.1:3400`. If the socket cannot be
+    /// Creates a UDP socket bound to `127.0.0.1:3400`. If the socket cannot be
     /// bound to that address, create a UDP socket bound to `127.0.0.1:3401`:
     ///
     /// ```no_run
@@ -158,7 +158,7 @@ impl UdpSocket {
     /// This will return an error when the IP version of the local socket
     /// does not match that returned from [`ToSocketAddrs`].
     ///
-    /// See <https://github.com/rust-lang/rust/issues/34202> for more details.
+    /// See issue #34202 for more details.
     ///
     /// [`ToSocketAddrs`]: ../../std/net/trait.ToSocketAddrs.html
     ///
@@ -178,6 +178,37 @@ impl UdpSocket {
             None => Err(Error::new(ErrorKind::InvalidInput,
                                    "no addresses to send data to")),
         }
+    }
+
+    /// Returns the socket address of the remote peer this socket was connected to.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// #![feature(udp_peer_addr)]
+    /// use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4, UdpSocket};
+    ///
+    /// let socket = UdpSocket::bind("127.0.0.1:34254").expect("couldn't bind to address");
+    /// socket.connect("192.168.0.1:41203").expect("couldn't connect to address");
+    /// assert_eq!(socket.peer_addr().unwrap(),
+    ///            SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(192, 168, 0, 1), 41203)));
+    /// ```
+    ///
+    /// If the socket isn't connected, it will return a [`NotConnected`] error.
+    ///
+    /// [`NotConnected`]: ../../std/io/enum.ErrorKind.html#variant.NotConnected
+    ///
+    /// ```no_run
+    /// #![feature(udp_peer_addr)]
+    /// use std::net::UdpSocket;
+    ///
+    /// let socket = UdpSocket::bind("127.0.0.1:34254").expect("couldn't bind to address");
+    /// assert_eq!(socket.peer_addr().unwrap_err().kind(),
+    ///            ::std::io::ErrorKind::NotConnected);
+    /// ```
+    #[unstable(feature = "udp_peer_addr", issue = "59127")]
+    pub fn peer_addr(&self) -> io::Result<SocketAddr> {
+        self.0.peer_addr()
     }
 
     /// Returns the socket address that this socket was created from.
@@ -590,7 +621,7 @@ impl UdpSocket {
         self.0.leave_multicast_v6(multiaddr, interface)
     }
 
-    /// Get the value of the `SO_ERROR` option on this socket.
+    /// Gets the value of the `SO_ERROR` option on this socket.
     ///
     /// This will retrieve the stored error in the underlying socket, clearing
     /// the field in the process. This can be useful for checking errors between
@@ -627,7 +658,7 @@ impl UdpSocket {
     ///
     /// # Examples
     ///
-    /// Create a UDP socket bound to `127.0.0.1:3400` and connect the socket to
+    /// Creates a UDP socket bound to `127.0.0.1:3400` and connect the socket to
     /// `127.0.0.1:8080`:
     ///
     /// ```no_run
@@ -756,7 +787,7 @@ impl UdpSocket {
     ///
     /// # Examples
     ///
-    /// Create a UDP socket bound to `127.0.0.1:7878` and read bytes in
+    /// Creates a UDP socket bound to `127.0.0.1:7878` and read bytes in
     /// nonblocking mode:
     ///
     /// ```no_run
@@ -801,20 +832,20 @@ impl IntoInner<net_imp::UdpSocket> for UdpSocket {
 
 #[stable(feature = "rust1", since = "1.0.0")]
 impl fmt::Debug for UdpSocket {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.0.fmt(f)
     }
 }
 
-#[cfg(all(test, not(any(target_os = "cloudabi", target_os = "emscripten"))))]
+#[cfg(all(test, not(any(target_os = "cloudabi", target_os = "emscripten", target_env = "sgx"))))]
 mod tests {
-    use io::ErrorKind;
-    use net::*;
-    use net::test::{next_test_ip4, next_test_ip6};
-    use sync::mpsc::channel;
-    use sys_common::AsInner;
-    use time::{Instant, Duration};
-    use thread;
+    use crate::io::ErrorKind;
+    use crate::net::*;
+    use crate::net::test::{next_test_ip4, next_test_ip6};
+    use crate::sync::mpsc::channel;
+    use crate::sys_common::AsInner;
+    use crate::time::{Instant, Duration};
+    use crate::thread;
 
     fn each_ip(f: &mut dyn FnMut(SocketAddr, SocketAddr)) {
         f(next_test_ip4(), next_test_ip4());
@@ -865,10 +896,20 @@ mod tests {
     }
 
     #[test]
-    fn socket_name_ip4() {
+    fn socket_name() {
         each_ip(&mut |addr, _| {
             let server = t!(UdpSocket::bind(&addr));
             assert_eq!(addr, t!(server.local_addr()));
+        })
+    }
+
+    #[test]
+    fn socket_peer() {
+        each_ip(&mut |addr1, addr2| {
+            let server = t!(UdpSocket::bind(&addr1));
+            assert_eq!(server.peer_addr().unwrap_err().kind(), ErrorKind::NotConnected);
+            t!(server.connect(&addr2));
+            assert_eq!(addr2, t!(server.peer_addr()));
         })
     }
 
@@ -983,9 +1024,9 @@ mod tests {
         assert_eq!(format!("{:?}", udpsock), compare);
     }
 
-    // FIXME: re-enabled bitrig/openbsd/netbsd tests once their socket timeout code
+    // FIXME: re-enabled openbsd/netbsd tests once their socket timeout code
     //        no longer has rounding errors.
-    #[cfg_attr(any(target_os = "bitrig", target_os = "netbsd", target_os = "openbsd"), ignore)]
+    #[cfg_attr(any(target_os = "netbsd", target_os = "openbsd"), ignore)]
     #[test]
     fn timeouts() {
         let addr = next_test_ip4();

@@ -1,4 +1,4 @@
-use spec::{LinkerFlavor, Target, TargetOptions, TargetResult};
+use crate::spec::{LinkerFlavor, Target, TargetOptions, TargetResult};
 
 // This target is for musl Linux on ARMv7 without thumb-mode or NEON.
 
@@ -26,6 +26,7 @@ pub fn target() -> TargetResult {
             cpu: "generic".to_string(),
             max_atomic_width: Some(64),
             abi_blacklist: super::arm_base::abi_blacklist(),
+            target_mcount: "\u{1}mcount".to_string(),
             .. base
         }
     })

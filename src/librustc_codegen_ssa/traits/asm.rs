@@ -1,5 +1,5 @@
 use super::BackendTypes;
-use mir::place::PlaceRef;
+use crate::mir::place::PlaceRef;
 use rustc::hir::{GlobalAsm, InlineAsm};
 
 pub trait AsmBuilderMethods<'tcx>: BackendTypes {
@@ -12,6 +12,6 @@ pub trait AsmBuilderMethods<'tcx>: BackendTypes {
     ) -> bool;
 }
 
-pub trait AsmMethods<'tcx> {
+pub trait AsmMethods {
     fn codegen_global_asm(&self, ga: &GlobalAsm);
 }

@@ -2,9 +2,9 @@
 //! Uses `Graph` as the underlying representation.
 
 use rustc_data_structures::graph::implementation as graph;
-use ty::TyCtxt;
-use hir;
-use hir::def_id::DefId;
+use crate::ty::TyCtxt;
+use crate::hir;
+use crate::hir::def_id::DefId;
 
 mod construct;
 pub mod graphviz;
@@ -49,8 +49,7 @@ pub type CFGNode = graph::Node<CFGNodeData>;
 pub type CFGEdge = graph::Edge<CFGEdgeData>;
 
 impl CFG {
-    pub fn new<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
-                         body: &hir::Body) -> CFG {
+    pub fn new<'tcx>(tcx: TyCtxt<'tcx>, body: &hir::Body) -> CFG {
         construct::construct(tcx, body)
     }
 

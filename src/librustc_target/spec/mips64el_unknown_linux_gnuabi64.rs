@@ -1,4 +1,4 @@
-use spec::{LinkerFlavor, Target, TargetOptions, TargetResult};
+use crate::spec::{LinkerFlavor, Target, TargetOptions, TargetResult};
 
 pub fn target() -> TargetResult {
     Ok(Target {
@@ -17,6 +17,7 @@ pub fn target() -> TargetResult {
             cpu: "mips64r2".to_string(),
             features: "+mips64r2".to_string(),
             max_atomic_width: Some(64),
+            target_mcount: "_mcount".to_string(),
 
             ..super::linux_base::opts()
         },

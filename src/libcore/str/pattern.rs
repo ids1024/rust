@@ -1,16 +1,16 @@
 //! The string Pattern API.
 //!
-//! For more details, see the traits `Pattern`, `Searcher`,
-//! `ReverseSearcher` and `DoubleEndedSearcher`.
+//! For more details, see the traits [`Pattern`], [`Searcher`],
+//! [`ReverseSearcher`], and [`DoubleEndedSearcher`].
 
 #![unstable(feature = "pattern",
             reason = "API not fully fleshed out and ready to be stabilized",
             issue = "27721")]
 
-use cmp;
-use fmt;
-use slice::memchr;
-use usize;
+use crate::cmp;
+use crate::fmt;
+use crate::slice::memchr;
+use crate::usize;
 
 // Pattern
 
@@ -117,7 +117,7 @@ pub unsafe trait Searcher<'a> {
     /// `[Reject(0, 1), Reject(1, 2), Match(2, 5), Reject(5, 8)]`
     fn next(&mut self) -> SearchStep;
 
-    /// Find the next `Match` result. See `next()`
+    /// Finds the next `Match` result. See `next()`
     ///
     /// Unlike next(), there is no guarantee that the returned ranges
     /// of this and next_reject will overlap. This will return (start_match, end_match),
@@ -134,7 +134,7 @@ pub unsafe trait Searcher<'a> {
         }
     }
 
-    /// Find the next `Reject` result. See `next()` and `next_match()`
+    /// Finds the next `Reject` result. See `next()` and `next_match()`
     ///
     /// Unlike next(), there is no guarantee that the returned ranges
     /// of this and next_match will overlap.
@@ -185,7 +185,7 @@ pub unsafe trait ReverseSearcher<'a>: Searcher<'a> {
     /// `[Reject(7, 8), Match(4, 7), Reject(1, 4), Reject(0, 1)]`
     fn next_back(&mut self) -> SearchStep;
 
-    /// Find the next `Match` result. See `next_back()`
+    /// Finds the next `Match` result. See `next_back()`
     #[inline]
     fn next_match_back(&mut self) -> Option<(usize, usize)>{
         loop {
@@ -197,7 +197,7 @@ pub unsafe trait ReverseSearcher<'a>: Searcher<'a> {
         }
     }
 
-    /// Find the next `Reject` result. See `next_back()`
+    /// Finds the next `Reject` result. See `next_back()`
     #[inline]
     fn next_reject_back(&mut self) -> Option<(usize, usize)>{
         loop {
@@ -658,7 +658,7 @@ pub struct CharPredicateSearcher<'a, F>(<MultiCharEqPattern<F> as Pattern<'a>>::
 impl<F> fmt::Debug for CharPredicateSearcher<'_, F>
     where F: FnMut(char) -> bool
 {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("CharPredicateSearcher")
             .field("haystack", &self.0.haystack)
             .field("char_indices", &self.0.char_indices)

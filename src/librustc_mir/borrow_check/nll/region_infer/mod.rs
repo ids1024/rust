@@ -1,19 +1,22 @@
 use super::universal_regions::UniversalRegions;
-use borrow_check::nll::constraints::graph::NormalConstraintGraph;
-use borrow_check::nll::constraints::{ConstraintSccIndex, ConstraintSet, OutlivesConstraint};
-use borrow_check::nll::region_infer::values::{PlaceholderIndices, RegionElement, ToElementIndex};
-use borrow_check::nll::type_check::free_region_relations::UniversalRegionRelations;
-use borrow_check::nll::type_check::Locations;
+use crate::borrow_check::nll::constraints::graph::NormalConstraintGraph;
+use crate::borrow_check::nll::constraints::{ConstraintSccIndex, ConstraintSet, OutlivesConstraint};
+use crate::borrow_check::nll::region_infer::values::{
+    PlaceholderIndices, RegionElement, ToElementIndex
+};
+use crate::borrow_check::Upvar;
+use crate::borrow_check::nll::type_check::free_region_relations::UniversalRegionRelations;
+use crate::borrow_check::nll::type_check::Locations;
 use rustc::hir::def_id::DefId;
 use rustc::infer::canonical::QueryRegionConstraint;
 use rustc::infer::region_constraints::{GenericKind, VarInfos, VerifyBound};
 use rustc::infer::{InferCtxt, NLLRegionVariableOrigin, RegionVariableOrigin};
 use rustc::mir::{
     ClosureOutlivesRequirement, ClosureOutlivesSubject, ClosureRegionRequirements,
-    ConstraintCategory, Local, Location, Mir,
+    ConstraintCategory, Local, Location, Body,
 };
-use rustc::ty::{self, RegionVid, Ty, TyCtxt, TypeFoldable};
-use rustc::util::common;
+use rustc::ty::{self, subst::SubstsRef, RegionVid, Ty, TyCtxt, TypeFoldable};
+use rustc::util::common::{self, ErrorReported};
 use rustc_data_structures::bit_set::BitSet;
 use rustc_data_structures::fx::{FxHashMap, FxHashSet};
 use rustc_data_structures::graph::scc::Sccs;
@@ -33,7 +36,7 @@ use self::values::{LivenessValues, RegionValueElements, RegionValues};
 use super::ToRegionVid;
 
 pub struct RegionInferenceContext<'tcx> {
-    /// Contains the definition for every region variable.  Region
+    /// Contains the definition for every region variable. Region
     /// variables are identified by their index (`RegionVid`). The
     /// definition contains information about where the region came
     /// from as well as its final inferred value.
@@ -122,7 +125,7 @@ pub(crate) enum Cause {
 }
 
 /// A "type test" corresponds to an outlives constraint between a type
-/// and a lifetime, like `T: 'x` or `<T as Foo>::Bar: 'x`.  They are
+/// and a lifetime, like `T: 'x` or `<T as Foo>::Bar: 'x`. They are
 /// translated from the `Verify` region constraints in the ordinary
 /// inference context.
 ///
@@ -135,10 +138,10 @@ pub(crate) enum Cause {
 ///
 /// In some cases, however, there are outlives relationships that are
 /// not converted into a region constraint, but rather into one of
-/// these "type tests".  The distinction is that a type test does not
+/// these "type tests". The distinction is that a type test does not
 /// influence the inference result, but instead just examines the
 /// values that we ultimately inferred for each region variable and
-/// checks that they meet certain extra criteria.  If not, an error
+/// checks that they meet certain extra criteria. If not, an error
 /// can be issued.
 ///
 /// One reason for this is that these type tests typically boil down
@@ -182,7 +185,7 @@ impl<'tcx> RegionInferenceContext<'tcx> {
         universal_regions: Rc<UniversalRegions<'tcx>>,
         placeholder_indices: Rc<PlaceholderIndices>,
         universal_region_relations: Rc<UniversalRegionRelations<'tcx>>,
-        _mir: &Mir<'tcx>,
+        _body: &Body<'tcx>,
         outlives_constraints: ConstraintSet,
         closure_bounds_mapping: FxHashMap<
             Location,
@@ -284,7 +287,7 @@ impl<'tcx> RegionInferenceContext<'tcx> {
     /// Initializes the region variables for each universally
     /// quantified region (lifetime parameter). The first N variables
     /// always correspond to the regions appearing in the function
-    /// signature (both named and anonymous) and where clauses. This
+    /// signature (both named and anonymous) and where-clauses. This
     /// function iterates over those regions and initializes them with
     /// minimum values.
     ///
@@ -366,12 +369,12 @@ impl<'tcx> RegionInferenceContext<'tcx> {
         self.universal_regions.to_region_vid(r)
     }
 
-    /// Add annotations for `#[rustc_regions]`; see `UniversalRegions::annotate`.
-    crate fn annotate(&self, tcx: TyCtxt<'_, '_, 'tcx>, err: &mut DiagnosticBuilder<'_>) {
+    /// Adds annotations for `#[rustc_regions]`; see `UniversalRegions::annotate`.
+    crate fn annotate(&self, tcx: TyCtxt<'tcx>, err: &mut DiagnosticBuilder<'_>) {
         self.universal_regions.annotate(tcx, err)
     }
 
-    /// Returns true if the region `r` contains the point `p`.
+    /// Returns `true` if the region `r` contains the point `p`.
     ///
     /// Panics if called before `solve()` executes,
     crate fn region_contains(&self, r: impl ToRegionVid, p: impl ToElementIndex) -> bool {
@@ -391,31 +394,34 @@ impl<'tcx> RegionInferenceContext<'tcx> {
         self.scc_universes[scc]
     }
 
-    /// Perform region inference and report errors if we see any
+    /// Performs region inference and report errors if we see any
     /// unsatisfiable constraints. If this is a closure, returns the
     /// region requirements to propagate to our creator, if any.
-    pub(super) fn solve<'gcx>(
+    pub(super) fn solve(
         &mut self,
-        infcx: &InferCtxt<'_, 'gcx, 'tcx>,
-        mir: &Mir<'tcx>,
+        infcx: &InferCtxt<'_, 'tcx>,
+        body: &Body<'tcx>,
+        upvars: &[Upvar],
         mir_def_id: DefId,
         errors_buffer: &mut Vec<Diagnostic>,
-    ) -> Option<ClosureRegionRequirements<'gcx>> {
-        common::time(
-            infcx.tcx.sess,
+    ) -> Option<ClosureRegionRequirements<'tcx>> {
+        common::time_ext(
+            infcx.tcx.sess.time_extended(),
+            Some(infcx.tcx.sess),
             &format!("solve_nll_region_constraints({:?})", mir_def_id),
-            || self.solve_inner(infcx, mir, mir_def_id, errors_buffer),
+            || self.solve_inner(infcx, body, upvars, mir_def_id, errors_buffer),
         )
     }
 
-    fn solve_inner<'gcx>(
+    fn solve_inner(
         &mut self,
-        infcx: &InferCtxt<'_, 'gcx, 'tcx>,
-        mir: &Mir<'tcx>,
+        infcx: &InferCtxt<'_, 'tcx>,
+        body: &Body<'tcx>,
+        upvars: &[Upvar],
         mir_def_id: DefId,
         errors_buffer: &mut Vec<Diagnostic>,
-    ) -> Option<ClosureRegionRequirements<'gcx>> {
-        self.propagate_constraints(mir);
+    ) -> Option<ClosureRegionRequirements<'tcx>> {
+        self.propagate_constraints(body);
 
         // If this is a closure, we can propagate unsatisfied
         // `outlives_requirements` to our creator, so create a vector
@@ -430,7 +436,7 @@ impl<'tcx> RegionInferenceContext<'tcx> {
 
         self.check_type_tests(
             infcx,
-            mir,
+            body,
             mir_def_id,
             outlives_requirements.as_mut(),
             errors_buffer,
@@ -438,7 +444,8 @@ impl<'tcx> RegionInferenceContext<'tcx> {
 
         self.check_universal_regions(
             infcx,
-            mir,
+            body,
+            upvars,
             mir_def_id,
             outlives_requirements.as_mut(),
             errors_buffer,
@@ -461,7 +468,7 @@ impl<'tcx> RegionInferenceContext<'tcx> {
     /// for each region variable until all the constraints are
     /// satisfied. Note that some values may grow **too** large to be
     /// feasible, but we check this later.
-    fn propagate_constraints(&mut self, _mir: &Mir<'tcx>) {
+    fn propagate_constraints(&mut self, _body: &Body<'tcx>) {
         debug!("propagate_constraints()");
 
         debug!("propagate_constraints: constraints={:#?}", {
@@ -531,7 +538,7 @@ impl<'tcx> RegionInferenceContext<'tcx> {
         );
     }
 
-    /// True if all the elements in the value of `scc_b` are nameable
+    /// Returns `true` if all the elements in the value of `scc_b` are nameable
     /// in `scc_a`. Used during constraint propagation, and only once
     /// the value of `scc_b` has been computed.
     fn universe_compatible(&self, scc_b: ConstraintSccIndex, scc_a: ConstraintSccIndex) -> bool {
@@ -571,12 +578,12 @@ impl<'tcx> RegionInferenceContext<'tcx> {
     /// whether the "type tests" produced by typeck were satisfied;
     /// type tests encode type-outlives relationships like `T:
     /// 'a`. See `TypeTest` for more details.
-    fn check_type_tests<'gcx>(
+    fn check_type_tests(
         &self,
-        infcx: &InferCtxt<'_, 'gcx, 'tcx>,
-        mir: &Mir<'tcx>,
+        infcx: &InferCtxt<'_, 'tcx>,
+        body: &Body<'tcx>,
         mir_def_id: DefId,
-        mut propagated_outlives_requirements: Option<&mut Vec<ClosureOutlivesRequirement<'gcx>>>,
+        mut propagated_outlives_requirements: Option<&mut Vec<ClosureOutlivesRequirement<'tcx>>>,
         errors_buffer: &mut Vec<Diagnostic>,
     ) {
         let tcx = infcx.tcx;
@@ -592,7 +599,7 @@ impl<'tcx> RegionInferenceContext<'tcx> {
             let generic_ty = type_test.generic_kind.to_ty(tcx);
             if self.eval_verify_bound(
                 tcx,
-                mir,
+                body,
                 generic_ty,
                 type_test.lower_bound,
                 &type_test.verify_bound,
@@ -603,7 +610,7 @@ impl<'tcx> RegionInferenceContext<'tcx> {
             if let Some(propagated_outlives_requirements) = &mut propagated_outlives_requirements {
                 if self.try_promote_type_test(
                     infcx,
-                    mir,
+                    body,
                     type_test,
                     propagated_outlives_requirements,
                 ) {
@@ -617,7 +624,7 @@ impl<'tcx> RegionInferenceContext<'tcx> {
             let lower_bound_region = self.to_error_region(type_test.lower_bound);
 
             // Skip duplicate-ish errors.
-            let type_test_span = type_test.locations.span(mir);
+            let type_test_span = type_test.locations.span(body);
             let erased_generic_kind = tcx.erase_regions(&type_test.generic_kind);
             if !deduplicate_errors.insert((
                 erased_generic_kind,
@@ -715,12 +722,12 @@ impl<'tcx> RegionInferenceContext<'tcx> {
     /// The idea then is to lower the `T: 'X` constraint into multiple
     /// bounds -- e.g., if `'X` is the union of two free lifetimes,
     /// `'1` and `'2`, then we would create `T: '1` and `T: '2`.
-    fn try_promote_type_test<'gcx>(
+    fn try_promote_type_test(
         &self,
-        infcx: &InferCtxt<'_, 'gcx, 'tcx>,
-        mir: &Mir<'tcx>,
+        infcx: &InferCtxt<'_, 'tcx>,
+        body: &Body<'tcx>,
         type_test: &TypeTest<'tcx>,
-        propagated_outlives_requirements: &mut Vec<ClosureOutlivesRequirement<'gcx>>,
+        propagated_outlives_requirements: &mut Vec<ClosureOutlivesRequirement<'tcx>>,
     ) -> bool {
         let tcx = infcx.tcx;
 
@@ -755,33 +762,39 @@ impl<'tcx> RegionInferenceContext<'tcx> {
             // where `ur` is a local bound -- we are sometimes in a
             // position to prove things that our caller cannot.  See
             // #53570 for an example.
-            if self.eval_verify_bound(tcx, mir, generic_ty, ur, &type_test.verify_bound) {
+            if self.eval_verify_bound(tcx, body, generic_ty, ur, &type_test.verify_bound) {
                 continue;
             }
 
             debug!("try_promote_type_test: ur={:?}", ur);
 
-            let non_local_ub = self.universal_region_relations.non_local_upper_bound(ur);
+            let non_local_ub = self.universal_region_relations.non_local_upper_bounds(&ur);
             debug!("try_promote_type_test: non_local_ub={:?}", non_local_ub);
 
-            assert!(self.universal_regions.is_universal_region(non_local_ub));
-            assert!(!self.universal_regions.is_local_free_region(non_local_ub));
+            // This is slightly too conservative. To show T: '1, given `'2: '1`
+            // and `'3: '1` we only need to prove that T: '2 *or* T: '3, but to
+            // avoid potential non-determinism we approximate this by requiring
+            // T: '1 and T: '2.
+            for &upper_bound in non_local_ub {
+                debug_assert!(self.universal_regions.is_universal_region(upper_bound));
+                debug_assert!(!self.universal_regions.is_local_free_region(upper_bound));
 
-            let requirement = ClosureOutlivesRequirement {
-                subject,
-                outlived_free_region: non_local_ub,
-                blame_span: locations.span(mir),
-                category: ConstraintCategory::Boring,
-            };
-            debug!("try_promote_type_test: pushing {:#?}", requirement);
-            propagated_outlives_requirements.push(requirement);
+                let requirement = ClosureOutlivesRequirement {
+                    subject,
+                    outlived_free_region: upper_bound,
+                    blame_span: locations.span(body),
+                    category: ConstraintCategory::Boring,
+                };
+                debug!("try_promote_type_test: pushing {:#?}", requirement);
+                propagated_outlives_requirements.push(requirement);
+            }
         }
         true
     }
 
     /// When we promote a type test `T: 'r`, we have to convert the
     /// type `T` into something we can store in a query result (so
-    /// something allocated for `'gcx`). This is problematic if `ty`
+    /// something allocated for `'tcx`). This is problematic if `ty`
     /// contains regions. During the course of NLL region checking, we
     /// will have replaced all of those regions with fresh inference
     /// variables. To create a test subject, we want to replace those
@@ -790,11 +803,11 @@ impl<'tcx> RegionInferenceContext<'tcx> {
     /// fallible process. Presuming we do find a suitable region, we
     /// will represent it with a `ReClosureBound`, which is a
     /// `RegionKind` variant that can be allocated in the gcx.
-    fn try_promote_type_test_subject<'gcx>(
+    fn try_promote_type_test_subject(
         &self,
-        infcx: &InferCtxt<'_, 'gcx, 'tcx>,
+        infcx: &InferCtxt<'_, 'tcx>,
         ty: Ty<'tcx>,
-    ) -> Option<ClosureOutlivesSubject<'gcx>> {
+    ) -> Option<ClosureOutlivesSubject<'tcx>> {
         let tcx = infcx.tcx;
         let gcx = tcx.global_tcx();
 
@@ -926,12 +939,12 @@ impl<'tcx> RegionInferenceContext<'tcx> {
         lub
     }
 
-    /// Test if `test` is true when applied to `lower_bound` at
-    /// `point`, and returns true or false.
+    /// Tests if `test` is true when applied to `lower_bound` at
+    /// `point`.
     fn eval_verify_bound(
         &self,
-        tcx: TyCtxt<'_, '_, 'tcx>,
-        mir: &Mir<'tcx>,
+        tcx: TyCtxt<'tcx>,
+        body: &Body<'tcx>,
         generic_ty: Ty<'tcx>,
         lower_bound: RegionVid,
         verify_bound: &VerifyBound<'tcx>,
@@ -943,28 +956,28 @@ impl<'tcx> RegionInferenceContext<'tcx> {
 
         match verify_bound {
             VerifyBound::IfEq(test_ty, verify_bound1) => {
-                self.eval_if_eq(tcx, mir, generic_ty, lower_bound, test_ty, verify_bound1)
+                self.eval_if_eq(tcx, body, generic_ty, lower_bound, test_ty, verify_bound1)
             }
 
             VerifyBound::OutlivedBy(r) => {
                 let r_vid = self.to_region_vid(r);
-                self.eval_outlives(mir, r_vid, lower_bound)
+                self.eval_outlives(body, r_vid, lower_bound)
             }
 
             VerifyBound::AnyBound(verify_bounds) => verify_bounds.iter().any(|verify_bound| {
-                self.eval_verify_bound(tcx, mir, generic_ty, lower_bound, verify_bound)
+                self.eval_verify_bound(tcx, body, generic_ty, lower_bound, verify_bound)
             }),
 
             VerifyBound::AllBounds(verify_bounds) => verify_bounds.iter().all(|verify_bound| {
-                self.eval_verify_bound(tcx, mir, generic_ty, lower_bound, verify_bound)
+                self.eval_verify_bound(tcx, body, generic_ty, lower_bound, verify_bound)
             }),
         }
     }
 
     fn eval_if_eq(
         &self,
-        tcx: TyCtxt<'_, '_, 'tcx>,
-        mir: &Mir<'tcx>,
+        tcx: TyCtxt<'tcx>,
+        body: &Body<'tcx>,
         generic_ty: Ty<'tcx>,
         lower_bound: RegionVid,
         test_ty: Ty<'tcx>,
@@ -973,7 +986,7 @@ impl<'tcx> RegionInferenceContext<'tcx> {
         let generic_ty_normalized = self.normalize_to_scc_representatives(tcx, generic_ty);
         let test_ty_normalized = self.normalize_to_scc_representatives(tcx, test_ty);
         if generic_ty_normalized == test_ty_normalized {
-            self.eval_verify_bound(tcx, mir, generic_ty, lower_bound, verify_bound)
+            self.eval_verify_bound(tcx, body, generic_ty, lower_bound, verify_bound)
         } else {
             false
         }
@@ -988,7 +1001,7 @@ impl<'tcx> RegionInferenceContext<'tcx> {
     /// different results. (For example, there might be two regions
     /// with the same value that are not in the same SCC).
     ///
-    /// NB. This is not an ideal approach and I would like to revisit
+    /// N.B., this is not an ideal approach and I would like to revisit
     /// it. However, it works pretty well in practice. In particular,
     /// this is needed to deal with projection outlives bounds like
     ///
@@ -996,7 +1009,7 @@ impl<'tcx> RegionInferenceContext<'tcx> {
     ///
     /// In particular, this routine winds up being important when
     /// there are bounds like `where <T as Foo<'a>>::Item: 'b` in the
-    /// environment.  In this case, if we can show that `'0 == 'a`,
+    /// environment. In this case, if we can show that `'0 == 'a`,
     /// and that `'b: '1`, then we know that the clause is
     /// satisfied. In such cases, particularly due to limitations of
     /// the trait solver =), we usually wind up with a where-clause like
@@ -1009,7 +1022,7 @@ impl<'tcx> RegionInferenceContext<'tcx> {
     /// higher-ranked things and so forth, and right now the inference
     /// context is not permitted to make more inference variables. So
     /// we use this kind of hacky solution.
-    fn normalize_to_scc_representatives<T>(&self, tcx: TyCtxt<'_, '_, 'tcx>, value: T) -> T
+    fn normalize_to_scc_representatives<T>(&self, tcx: TyCtxt<'tcx>, value: T) -> T
     where
         T: TypeFoldable<'tcx>,
     {
@@ -1024,7 +1037,7 @@ impl<'tcx> RegionInferenceContext<'tcx> {
     // Evaluate whether `sup_region: sub_region @ point`.
     fn eval_outlives(
         &self,
-        _mir: &Mir<'tcx>,
+        _body: &Body<'tcx>,
         sup_region: RegionVid,
         sub_region: RegionVid,
     ) -> bool {
@@ -1075,7 +1088,7 @@ impl<'tcx> RegionInferenceContext<'tcx> {
     /// Once regions have been propagated, this method is used to see
     /// whether any of the constraints were too strong. In particular,
     /// we want to check for a case where a universally quantified
-    /// region exceeded its bounds.  Consider:
+    /// region exceeded its bounds. Consider:
     ///
     ///     fn foo<'a, 'b>(x: &'a u32) -> &'b u32 { x }
     ///
@@ -1089,12 +1102,13 @@ impl<'tcx> RegionInferenceContext<'tcx> {
     /// If `propagated_outlives_requirements` is `Some`, then we will
     /// push unsatisfied obligations into there. Otherwise, we'll
     /// report them as errors.
-    fn check_universal_regions<'gcx>(
+    fn check_universal_regions(
         &self,
-        infcx: &InferCtxt<'_, 'gcx, 'tcx>,
-        mir: &Mir<'tcx>,
+        infcx: &InferCtxt<'_, 'tcx>,
+        body: &Body<'tcx>,
+        upvars: &[Upvar],
         mir_def_id: DefId,
-        mut propagated_outlives_requirements: Option<&mut Vec<ClosureOutlivesRequirement<'gcx>>>,
+        mut propagated_outlives_requirements: Option<&mut Vec<ClosureOutlivesRequirement<'tcx>>>,
         errors_buffer: &mut Vec<Diagnostic>,
     ) {
         for (fr, fr_definition) in self.definitions.iter_enumerated() {
@@ -1105,7 +1119,8 @@ impl<'tcx> RegionInferenceContext<'tcx> {
                     // for our caller into the `outlives_requirements` vector.
                     self.check_universal_region(
                         infcx,
-                        mir,
+                        body,
+                        upvars,
                         mir_def_id,
                         fr,
                         &mut propagated_outlives_requirements,
@@ -1114,7 +1129,7 @@ impl<'tcx> RegionInferenceContext<'tcx> {
                 }
 
                 NLLRegionVariableOrigin::Placeholder(placeholder) => {
-                    self.check_bound_universal_region(infcx, mir, mir_def_id, fr, placeholder);
+                    self.check_bound_universal_region(infcx, body, mir_def_id, fr, placeholder);
                 }
 
                 NLLRegionVariableOrigin::Existential => {
@@ -1124,7 +1139,7 @@ impl<'tcx> RegionInferenceContext<'tcx> {
         }
     }
 
-    /// Check the final value for the free region `fr` to see if it
+    /// Checks the final value for the free region `fr` to see if it
     /// grew too large. In particular, examine what `end(X)` points
     /// wound up in `fr`'s final value; for each `end(X)` where `X !=
     /// fr`, we want to check that `fr: X`. If not, that's either an
@@ -1132,13 +1147,14 @@ impl<'tcx> RegionInferenceContext<'tcx> {
     ///
     /// Things that are to be propagated are accumulated into the
     /// `outlives_requirements` vector.
-    fn check_universal_region<'gcx>(
+    fn check_universal_region(
         &self,
-        infcx: &InferCtxt<'_, 'gcx, 'tcx>,
-        mir: &Mir<'tcx>,
+        infcx: &InferCtxt<'_, 'tcx>,
+        body: &Body<'tcx>,
+        upvars: &[Upvar],
         mir_def_id: DefId,
         longer_fr: RegionVid,
-        propagated_outlives_requirements: &mut Option<&mut Vec<ClosureOutlivesRequirement<'gcx>>>,
+        propagated_outlives_requirements: &mut Option<&mut Vec<ClosureOutlivesRequirement<'tcx>>>,
         errors_buffer: &mut Vec<Diagnostic>,
     ) {
         debug!("check_universal_region(fr={:?})", longer_fr);
@@ -1155,69 +1171,119 @@ impl<'tcx> RegionInferenceContext<'tcx> {
                 .is_none()
         );
 
+        // Only check all of the relations for the main representative of each
+        // SCC, otherwise just check that we outlive said representative. This
+        // reduces the number of redundant relations propagated out of
+        // closures.
+        // Note that the representative will be a universal region if there is
+        // one in this SCC, so we will always check the representative here.
+        let representative = self.scc_representatives[longer_fr_scc];
+        if representative != longer_fr {
+            self.check_universal_region_relation(
+                longer_fr,
+                representative,
+                infcx,
+                body,
+                upvars,
+                mir_def_id,
+                propagated_outlives_requirements,
+                errors_buffer,
+            );
+            return;
+        }
+
         // Find every region `o` such that `fr: o`
         // (because `fr` includes `end(o)`).
         for shorter_fr in self.scc_values.universal_regions_outlived_by(longer_fr_scc) {
-            // If it is known that `fr: o`, carry on.
-            if self.universal_region_relations
-                .outlives(longer_fr, shorter_fr)
-            {
-                continue;
+            if let Some(ErrorReported) = self.check_universal_region_relation(
+                longer_fr,
+                shorter_fr,
+                infcx,
+                body,
+                upvars,
+                mir_def_id,
+                propagated_outlives_requirements,
+                errors_buffer,
+            ) {
+                // continuing to iterate just reports more errors than necessary
+                return;
             }
-
-            debug!(
-                "check_universal_region: fr={:?} does not outlive shorter_fr={:?}",
-                longer_fr, shorter_fr,
-            );
-
-            let blame_span_category = self.find_outlives_blame_span(mir, longer_fr, shorter_fr);
-
-            if let Some(propagated_outlives_requirements) = propagated_outlives_requirements {
-                // Shrink `fr` until we find a non-local region (if we do).
-                // We'll call that `fr-` -- it's ever so slightly smaller than `fr`.
-                if let Some(fr_minus) = self.universal_region_relations
-                    .non_local_lower_bound(longer_fr)
-                {
-                    debug!("check_universal_region: fr_minus={:?}", fr_minus);
-
-                    // Grow `shorter_fr` until we find a non-local
-                    // region. (We always will.)  We'll call that
-                    // `shorter_fr+` -- it's ever so slightly larger than
-                    // `fr`.
-                    let shorter_fr_plus = self.universal_region_relations
-                        .non_local_upper_bound(shorter_fr);
-                    debug!(
-                        "check_universal_region: shorter_fr_plus={:?}",
-                        shorter_fr_plus
-                    );
-
-                    // Push the constraint `fr-: shorter_fr+`
-                    propagated_outlives_requirements.push(ClosureOutlivesRequirement {
-                        subject: ClosureOutlivesSubject::Region(fr_minus),
-                        outlived_free_region: shorter_fr_plus,
-                        blame_span: blame_span_category.1,
-                        category: blame_span_category.0,
-                    });
-                    continue;
-                }
-            }
-
-            // If we are not in a context where we can propagate
-            // errors, or we could not shrink `fr` to something
-            // smaller, then just report an error.
-            //
-            // Note: in this case, we use the unapproximated regions
-            // to report the error. This gives better error messages
-            // in some cases.
-            self.report_error(mir, infcx, mir_def_id, longer_fr, shorter_fr, errors_buffer);
-            return; // continuing to iterate just reports more errors than necessary
         }
     }
 
-    fn check_bound_universal_region<'gcx>(
+    fn check_universal_region_relation(
         &self,
-        infcx: &InferCtxt<'_, 'gcx, 'tcx>,
-        mir: &Mir<'tcx>,
+        longer_fr: RegionVid,
+        shorter_fr: RegionVid,
+        infcx: &InferCtxt<'_, 'tcx>,
+        body: &Body<'tcx>,
+        upvars: &[Upvar],
+        mir_def_id: DefId,
+        propagated_outlives_requirements: &mut Option<&mut Vec<ClosureOutlivesRequirement<'tcx>>>,
+        errors_buffer: &mut Vec<Diagnostic>,
+    ) -> Option<ErrorReported> {
+        // If it is known that `fr: o`, carry on.
+        if self.universal_region_relations
+            .outlives(longer_fr, shorter_fr)
+        {
+            return None;
+        }
+
+        debug!(
+            "check_universal_region_relation: fr={:?} does not outlive shorter_fr={:?}",
+            longer_fr, shorter_fr,
+        );
+
+        if let Some(propagated_outlives_requirements) = propagated_outlives_requirements {
+            // Shrink `longer_fr` until we find a non-local region (if we do).
+            // We'll call it `fr-` -- it's ever so slightly smaller than
+            // `longer_fr`.
+
+            if let Some(fr_minus) = self
+                .universal_region_relations
+                .non_local_lower_bound(longer_fr)
+            {
+                debug!("check_universal_region: fr_minus={:?}", fr_minus);
+
+                let blame_span_category =
+                    self.find_outlives_blame_span(body, longer_fr, shorter_fr);
+
+                // Grow `shorter_fr` until we find some non-local regions. (We
+                // always will.)  We'll call them `shorter_fr+` -- they're ever
+                // so slightly larger than `shorter_fr`.
+                let shorter_fr_plus = self.universal_region_relations
+                    .non_local_upper_bounds(&shorter_fr);
+                debug!(
+                    "check_universal_region: shorter_fr_plus={:?}",
+                    shorter_fr_plus
+                );
+                for &&fr in &shorter_fr_plus {
+                    // Push the constraint `fr-: shorter_fr+`
+                    propagated_outlives_requirements.push(ClosureOutlivesRequirement {
+                        subject: ClosureOutlivesSubject::Region(fr_minus),
+                        outlived_free_region: fr,
+                        blame_span: blame_span_category.1,
+                        category: blame_span_category.0,
+                    });
+                }
+                return None;
+            }
+        }
+
+        // If we are not in a context where we can't propagate errors, or we
+        // could not shrink `fr` to something smaller, then just report an
+        // error.
+        //
+        // Note: in this case, we use the unapproximated regions to report the
+        // error. This gives better error messages in some cases.
+        self.report_error(body, upvars, infcx, mir_def_id, longer_fr, shorter_fr, errors_buffer);
+        Some(ErrorReported)
+    }
+
+    fn check_bound_universal_region(
+        &self,
+        infcx: &InferCtxt<'_, 'tcx>,
+        body: &Body<'tcx>,
         _mir_def_id: DefId,
         longer_fr: RegionVid,
         placeholder: ty::PlaceholderRegion,
@@ -1265,7 +1331,7 @@ impl<'tcx> RegionInferenceContext<'tcx> {
         };
 
         // Find the code to blame for the fact that `longer_fr` outlives `error_fr`.
-        let (_, span) = self.find_outlives_blame_span(mir, longer_fr, error_region);
+        let (_, span) = self.find_outlives_blame_span(body, longer_fr, error_region);
 
         // Obviously, this error message is far from satisfactory.
         // At present, though, it only appears in unit tests --
@@ -1299,18 +1365,17 @@ impl<'tcx> RegionDefinition<'tcx> {
     }
 }
 
-pub trait ClosureRegionRequirementsExt<'gcx, 'tcx> {
+pub trait ClosureRegionRequirementsExt<'tcx> {
     fn apply_requirements(
         &self,
-        tcx: TyCtxt<'_, 'gcx, 'tcx>,
-        location: Location,
+        tcx: TyCtxt<'tcx>,
         closure_def_id: DefId,
-        closure_substs: &'tcx ty::subst::Substs<'tcx>,
+        closure_substs: SubstsRef<'tcx>,
     ) -> Vec<QueryRegionConstraint<'tcx>>;
 
     fn subst_closure_mapping<T>(
         &self,
-        tcx: TyCtxt<'_, 'gcx, 'tcx>,
+        tcx: TyCtxt<'tcx>,
         closure_mapping: &IndexVec<RegionVid, ty::Region<'tcx>>,
         value: &T,
     ) -> T
@@ -1318,7 +1383,7 @@ pub trait ClosureRegionRequirementsExt<'gcx, 'tcx> {
         T: TypeFoldable<'tcx>;
 }
 
-impl<'gcx, 'tcx> ClosureRegionRequirementsExt<'gcx, 'tcx> for ClosureRegionRequirements<'gcx> {
+impl<'tcx> ClosureRegionRequirementsExt<'tcx> for ClosureRegionRequirements<'tcx> {
     /// Given an instance T of the closure type, this method
     /// instantiates the "extra" requirements that we computed for the
     /// closure into the inference context. This has the effect of
@@ -1333,14 +1398,13 @@ impl<'gcx, 'tcx> ClosureRegionRequirementsExt<'gcx, 'tcx> for ClosureRegionRequi
     /// requirements.
     fn apply_requirements(
         &self,
-        tcx: TyCtxt<'_, 'gcx, 'tcx>,
-        location: Location,
+        tcx: TyCtxt<'tcx>,
         closure_def_id: DefId,
-        closure_substs: &'tcx ty::subst::Substs<'tcx>,
+        closure_substs: SubstsRef<'tcx>,
     ) -> Vec<QueryRegionConstraint<'tcx>> {
         debug!(
-            "apply_requirements(location={:?}, closure_def_id={:?}, closure_substs={:?})",
-            location, closure_def_id, closure_substs
+            "apply_requirements(closure_def_id={:?}, closure_substs={:?})",
+            closure_def_id, closure_substs
         );
 
         // Extract the values of the free regions in `closure_substs`
@@ -1389,7 +1453,7 @@ impl<'gcx, 'tcx> ClosureRegionRequirementsExt<'gcx, 'tcx> for ClosureRegionRequi
 
     fn subst_closure_mapping<T>(
         &self,
-        tcx: TyCtxt<'_, 'gcx, 'tcx>,
+        tcx: TyCtxt<'tcx>,
         closure_mapping: &IndexVec<RegionVid, ty::Region<'tcx>>,
         value: &T,
     ) -> T

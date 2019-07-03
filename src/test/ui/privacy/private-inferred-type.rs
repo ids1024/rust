@@ -1,4 +1,3 @@
-#![feature(associated_consts)]
 #![feature(decl_macro)]
 #![allow(private_in_public)]
 
@@ -15,6 +14,7 @@ mod m {
     pub struct PubTupleStruct(u8);
     impl PubTupleStruct { fn method() {} }
 
+    #[derive(Clone, Copy)]
     struct Priv;
     pub type Alias = Priv;
     pub struct Pub<T = Alias>(pub T);
@@ -47,7 +47,7 @@ mod m {
         PubTupleStruct;
         //~^ ERROR type `fn(u8) -> m::PubTupleStruct {m::PubTupleStruct}` is private
         Pub(0u8).priv_method();
-        //~^ ERROR type `for<'r> fn(&'r m::Pub<u8>) {<m::Pub<u8>>::priv_method}` is private
+        //~^ ERROR type `for<'r> fn(&'r m::Pub<u8>) {m::Pub::<u8>::priv_method}` is private
     }
 
     trait Trait {}
@@ -65,9 +65,9 @@ mod m {
     pub fn leak_anon2() -> impl TraitWithTyParam<Alias> { 0 }
     pub fn leak_anon3() -> impl TraitWithAssocTy<AssocTy = Alias> { 0 }
 
-    pub fn leak_dyn1() -> Box<Trait + 'static> { Box::new(0) }
-    pub fn leak_dyn2() -> Box<TraitWithTyParam<Alias>> { Box::new(0) }
-    pub fn leak_dyn3() -> Box<TraitWithAssocTy<AssocTy = Alias>> { Box::new(0) }
+    pub fn leak_dyn1() -> Box<dyn Trait + 'static> { Box::new(0) }
+    pub fn leak_dyn2() -> Box<dyn TraitWithTyParam<Alias>> { Box::new(0) }
+    pub fn leak_dyn3() -> Box<dyn TraitWithAssocTy<AssocTy = Alias>> { Box::new(0) }
 }
 
 mod adjust {

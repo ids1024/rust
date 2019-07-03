@@ -1,22 +1,16 @@
-use hir::def::Def;
-use hir::def_id::DefId;
-use ty::{self, Ty, TyCtxt};
-use ty::layout::{LayoutError, Pointer, SizeSkeleton, VariantIdx};
-use ty::query::{Providers, queries};
+use crate::hir::def::{Res, DefKind};
+use crate::hir::def_id::DefId;
+use crate::ty::{self, Ty, TyCtxt};
+use crate::ty::layout::{LayoutError, Pointer, SizeSkeleton, VariantIdx};
+use crate::ty::query::Providers;
 
 use rustc_target::spec::abi::Abi::RustIntrinsic;
 use rustc_data_structures::indexed_vec::Idx;
-use syntax_pos::Span;
-use hir::intravisit::{self, Visitor, NestedVisitorMap};
-use hir;
+use syntax_pos::{Span, sym};
+use crate::hir::intravisit::{self, Visitor, NestedVisitorMap};
+use crate::hir;
 
-pub fn check_crate<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>) {
-    for &module in tcx.hir().krate().modules.keys() {
-        queries::check_mod_intrinsics::ensure(tcx, tcx.hir().local_def_id(module));
-    }
-}
-
-fn check_mod_intrinsics<'tcx>(tcx: TyCtxt<'_, 'tcx, 'tcx>, module_def_id: DefId) {
+fn check_mod_intrinsics<'tcx>(tcx: TyCtxt<'tcx>, module_def_id: DefId) {
     tcx.hir().visit_item_likes_in_module(
         module_def_id,
         &mut ItemVisitor { tcx }.as_deep_visitor()
@@ -30,21 +24,19 @@ pub fn provide(providers: &mut Providers<'_>) {
     };
 }
 
-struct ItemVisitor<'a, 'tcx: 'a> {
-    tcx: TyCtxt<'a, 'tcx, 'tcx>
+struct ItemVisitor<'tcx> {
+    tcx: TyCtxt<'tcx>,
 }
 
-struct ExprVisitor<'a, 'tcx: 'a> {
-    tcx: TyCtxt<'a, 'tcx, 'tcx>,
+struct ExprVisitor<'tcx> {
+    tcx: TyCtxt<'tcx>,
     tables: &'tcx ty::TypeckTables<'tcx>,
     param_env: ty::ParamEnv<'tcx>,
 }
 
 /// If the type is `Option<T>`, it will return `T`, otherwise
 /// the type itself. Works on most `Option`-like types.
-fn unpack_option_like<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
-                                ty: Ty<'tcx>)
-                                -> Ty<'tcx> {
+fn unpack_option_like<'tcx>(tcx: TyCtxt<'tcx>, ty: Ty<'tcx>) -> Ty<'tcx> {
     let (def, substs) = match ty.sty {
         ty::Adt(def, substs) => (def, substs),
         _ => return ty
@@ -72,10 +64,10 @@ fn unpack_option_like<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
     ty
 }
 
-impl<'a, 'tcx> ExprVisitor<'a, 'tcx> {
+impl ExprVisitor<'tcx> {
     fn def_id_is_transmute(&self, def_id: DefId) -> bool {
         self.tcx.fn_sig(def_id).abi() == RustIntrinsic &&
-        self.tcx.item_name(def_id) == "transmute"
+        self.tcx.item_name(def_id) == sym::transmute
     }
 
     fn check_transmute(&self, span: Span, from: Ty<'tcx>, to: Ty<'tcx>) {
@@ -137,7 +129,7 @@ impl<'a, 'tcx> ExprVisitor<'a, 'tcx> {
     }
 }
 
-impl<'a, 'tcx> Visitor<'tcx> for ItemVisitor<'a, 'tcx> {
+impl Visitor<'tcx> for ItemVisitor<'tcx> {
     fn nested_visit_map<'this>(&'this mut self) -> NestedVisitorMap<'this, 'tcx> {
         NestedVisitorMap::None
     }
@@ -152,20 +144,20 @@ impl<'a, 'tcx> Visitor<'tcx> for ItemVisitor<'a, 'tcx> {
     }
 }
 
-impl<'a, 'tcx> Visitor<'tcx> for ExprVisitor<'a, 'tcx> {
+impl Visitor<'tcx> for ExprVisitor<'tcx> {
     fn nested_visit_map<'this>(&'this mut self) -> NestedVisitorMap<'this, 'tcx> {
         NestedVisitorMap::None
     }
 
     fn visit_expr(&mut self, expr: &'tcx hir::Expr) {
-        let def = if let hir::ExprKind::Path(ref qpath) = expr.node {
-            self.tables.qpath_def(qpath, expr.hir_id)
+        let res = if let hir::ExprKind::Path(ref qpath) = expr.node {
+            self.tables.qpath_res(qpath, expr.hir_id)
         } else {
-            Def::Err
+            Res::Err
         };
-        if let Def::Fn(did) = def {
+        if let Res::Def(DefKind::Fn, did) = res {
             if self.def_id_is_transmute(did) {
-                let typ = self.tables.node_id_to_type(expr.hir_id);
+                let typ = self.tables.node_type(expr.hir_id);
                 let sig = typ.fn_sig(self.tcx);
                 let from = sig.inputs().skip_binder()[0];
                 let to = *sig.output().skip_binder();

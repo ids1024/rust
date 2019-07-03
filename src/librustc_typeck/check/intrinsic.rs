@@ -4,17 +4,17 @@
 use rustc::traits::{ObligationCause, ObligationCauseCode};
 use rustc::ty::{self, TyCtxt, Ty};
 use rustc::ty::subst::Subst;
-use require_same_types;
+use crate::require_same_types;
 
 use rustc_target::spec::abi::Abi;
-use syntax::symbol::Symbol;
+use syntax::symbol::InternedString;
 
 use rustc::hir;
 
 use std::iter;
 
-fn equate_intrinsic_type<'a, 'tcx>(
-    tcx: TyCtxt<'a, 'tcx, 'tcx>,
+fn equate_intrinsic_type<'tcx>(
+    tcx: TyCtxt<'tcx>,
     it: &hir::ForeignItem,
     n_tps: usize,
     abi: Abi,
@@ -22,7 +22,7 @@ fn equate_intrinsic_type<'a, 'tcx>(
     inputs: Vec<Ty<'tcx>>,
     output: Ty<'tcx>,
 ) {
-    let def_id = tcx.hir().local_def_id(it.id);
+    let def_id = tcx.hir().local_def_id_from_hir_id(it.hir_id);
 
     match it.node {
         hir::ForeignItemKind::Fn(..) => {}
@@ -58,18 +58,20 @@ fn equate_intrinsic_type<'a, 'tcx>(
         safety,
         abi
     )));
-    let cause = ObligationCause::new(it.span, it.id, ObligationCauseCode::IntrinsicType);
+    let cause = ObligationCause::new(it.span, it.hir_id, ObligationCauseCode::IntrinsicType);
     require_same_types(tcx, &cause, tcx.mk_fn_ptr(tcx.fn_sig(def_id)), fty);
 }
 
-/// Returns whether the given intrinsic is unsafe to call or not.
+/// Returns `true` if the given intrinsic is unsafe to call or not.
 pub fn intrisic_operation_unsafety(intrinsic: &str) -> hir::Unsafety {
     match intrinsic {
         "size_of" | "min_align_of" | "needs_drop" |
         "add_with_overflow" | "sub_with_overflow" | "mul_with_overflow" |
         "overflowing_add" | "overflowing_sub" | "overflowing_mul" |
+        "saturating_add" | "saturating_sub" |
         "rotate_left" | "rotate_right" |
-        "ctpop" | "ctlz" | "cttz" | "bswap" | "bitreverse"
+        "ctpop" | "ctlz" | "cttz" | "bswap" | "bitreverse" |
+        "minnumf32" | "minnumf64" | "maxnumf32" | "maxnumf64"
         => hir::Unsafety::Normal,
         _ => hir::Unsafety::Unsafe,
     }
@@ -77,9 +79,8 @@ pub fn intrisic_operation_unsafety(intrinsic: &str) -> hir::Unsafety {
 
 /// Remember to add all intrinsics here, in librustc_codegen_llvm/intrinsic.rs,
 /// and in libcore/intrinsics.rs
-pub fn check_intrinsic_type<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
-                                      it: &hir::ForeignItem) {
-    let param = |n| tcx.mk_ty_param(n, Symbol::intern(&format!("P{}", n)).as_interned_str());
+pub fn check_intrinsic_type<'tcx>(tcx: TyCtxt<'tcx>, it: &hir::ForeignItem) {
+    let param = |n| tcx.mk_ty_param(n, InternedString::intern(&format!("P{}", n)));
     let name = it.ident.as_str();
 
     let mk_va_list_ty = || {
@@ -271,6 +272,10 @@ pub fn check_intrinsic_type<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
             }
             "fabsf32"      => (0, vec![ tcx.types.f32 ], tcx.types.f32),
             "fabsf64"      => (0, vec![ tcx.types.f64 ], tcx.types.f64),
+            "minnumf32"    => (0, vec![ tcx.types.f32, tcx.types.f32 ], tcx.types.f32),
+            "minnumf64"    => (0, vec![ tcx.types.f64, tcx.types.f64 ], tcx.types.f64),
+            "maxnumf32"    => (0, vec![ tcx.types.f32, tcx.types.f32 ], tcx.types.f32),
+            "maxnumf64"    => (0, vec![ tcx.types.f64, tcx.types.f64 ], tcx.types.f64),
             "copysignf32"  => (0, vec![ tcx.types.f32, tcx.types.f32 ], tcx.types.f32),
             "copysignf64"  => (0, vec![ tcx.types.f64, tcx.types.f64 ], tcx.types.f64),
             "floorf32"     => (0, vec![ tcx.types.f32 ], tcx.types.f32),
@@ -304,8 +309,11 @@ pub fn check_intrinsic_type<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
             "unchecked_shl" | "unchecked_shr" |
             "rotate_left" | "rotate_right" =>
                 (1, vec![param(0), param(0)], param(0)),
-
+            "unchecked_add" | "unchecked_sub" | "unchecked_mul" =>
+                (1, vec![param(0), param(0)], param(0)),
             "overflowing_add" | "overflowing_sub" | "overflowing_mul" =>
+                (1, vec![param(0), param(0)], param(0)),
+            "saturating_add" | "saturating_sub" =>
                 (1, vec![param(0), param(0)], param(0)),
             "fadd_fast" | "fsub_fast" | "fmul_fast" | "fdiv_fast" | "frem_fast" =>
                 (1, vec![param(0), param(0)], param(0)),
@@ -334,7 +342,7 @@ pub fn check_intrinsic_type<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
             "va_start" | "va_end" => {
                 match mk_va_list_ty() {
                     Some(va_list_ty) => (0, vec![va_list_ty], tcx.mk_unit()),
-                    None => bug!("va_list lang_item must be defined to use va_list intrinsics")
+                    None => bug!("`va_list` language item needed for C-variadic intrinsics")
                 }
             }
 
@@ -361,14 +369,14 @@ pub fn check_intrinsic_type<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
                         };
                         (0, vec![tcx.mk_imm_ref(tcx.mk_region(env_region), va_list_ty)], ret_ty)
                     }
-                    None => bug!("va_list lang_item must be defined to use va_list intrinsics")
+                    None => bug!("`va_list` language item needed for C-variadic intrinsics")
                 }
             }
 
             "va_arg" => {
                 match mk_va_list_ty() {
                     Some(va_list_ty) => (1, vec![va_list_ty], param(0)),
-                    None => bug!("va_list lang_item must be defined to use va_list intrinsics")
+                    None => bug!("`va_list` language item needed for C-variadic intrinsics")
                 }
             }
 
@@ -391,10 +399,9 @@ pub fn check_intrinsic_type<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
 }
 
 /// Type-check `extern "platform-intrinsic" { ... }` functions.
-pub fn check_platform_intrinsic_type<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
-                                               it: &hir::ForeignItem) {
+pub fn check_platform_intrinsic_type<'tcx>(tcx: TyCtxt<'tcx>, it: &hir::ForeignItem) {
     let param = |n| {
-        let name = Symbol::intern(&format!("P{}", n)).as_interned_str();
+        let name = InternedString::intern(&format!("P{}", n));
         tcx.mk_ty_param(n, name)
     };
 
@@ -407,7 +414,8 @@ pub fn check_platform_intrinsic_type<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
         "simd_add" | "simd_sub" | "simd_mul" | "simd_rem" |
         "simd_div" | "simd_shl" | "simd_shr" |
         "simd_and" | "simd_or" | "simd_xor" |
-        "simd_fmin" | "simd_fmax" | "simd_fpow" => {
+        "simd_fmin" | "simd_fmax" | "simd_fpow" |
+        "simd_saturating_add" | "simd_saturating_sub" => {
             (1, vec![param(0), param(0)], param(0))
         }
         "simd_fsqrt" | "simd_fsin" | "simd_fcos" | "simd_fexp" | "simd_fexp2" |

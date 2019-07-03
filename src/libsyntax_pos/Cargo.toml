@@ -2,6 +2,7 @@
 authors = ["The Rust Project Developers"]
 name = "syntax_pos"
 version = "0.0.0"
+edition = "2018"
 
 [lib]
 name = "syntax_pos"
@@ -10,8 +11,9 @@ crate-type = ["dylib"]
 
 [dependencies]
 serialize = { path = "../libserialize" }
+rustc_macros = { path = "../librustc_macros" }
 rustc_data_structures = { path = "../librustc_data_structures" }
 arena = { path = "../libarena" }
-scoped-tls = { version = "0.1.1", features = ["nightly"] }
+scoped-tls = "1.0"
 unicode-width = "0.1.4"
 cfg-if = "0.1.2"

@@ -1,12 +1,12 @@
 // compile-flags: -Z span_free_formats -Z mir-opt-level=3
 
+fn test2(x: &dyn X) -> bool {
+    test(x)
+}
+
 #[inline]
 fn test(x: &dyn X) -> bool {
     x.y()
-}
-
-fn test2(x: &dyn X) -> bool {
-    test(x)
 }
 
 trait X {
@@ -30,7 +30,7 @@ fn main() {
 // ...
 // bb0: {
 // ...
-//     _0 = const X::y(move _2) -> bb1;
+//     _0 = const <dyn X as X>::y(move _2) -> bb1;
 // }
 // ...
 // END rustc.test2.Inline.after.mir

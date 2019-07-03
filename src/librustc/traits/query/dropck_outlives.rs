@@ -1,12 +1,12 @@
-use infer::at::At;
-use infer::InferOk;
-use infer::canonical::OriginalQueryValues;
+use crate::infer::at::At;
+use crate::infer::InferOk;
+use crate::infer::canonical::OriginalQueryValues;
 use std::iter::FromIterator;
 use syntax::source_map::Span;
-use ty::subst::Kind;
-use ty::{self, Ty, TyCtxt};
+use crate::ty::subst::Kind;
+use crate::ty::{self, Ty, TyCtxt};
 
-impl<'cx, 'gcx, 'tcx> At<'cx, 'gcx, 'tcx> {
+impl<'cx, 'tcx> At<'cx, 'tcx> {
     /// Given a type `ty` of some value being dropped, computes a set
     /// of "kinds" (types, regions) that must be outlive the execution
     /// of the destructor. These basically correspond to data that the
@@ -54,7 +54,7 @@ impl<'cx, 'gcx, 'tcx> At<'cx, 'gcx, 'tcx> {
                     &orig_values,
                     result)
                 {
-                    let ty = self.infcx.resolve_type_vars_if_possible(&ty);
+                    let ty = self.infcx.resolve_vars_if_possible(&ty);
                     let kinds = value.into_kinds_reporting_overflows(tcx, span, ty);
                     return InferOk {
                         value: kinds,
@@ -85,12 +85,7 @@ pub struct DropckOutlivesResult<'tcx> {
 }
 
 impl<'tcx> DropckOutlivesResult<'tcx> {
-    pub fn report_overflows(
-        &self,
-        tcx: TyCtxt<'_, '_, 'tcx>,
-        span: Span,
-        ty: Ty<'tcx>,
-    ) {
+    pub fn report_overflows(&self, tcx: TyCtxt<'tcx>, span: Span, ty: Ty<'tcx>) {
         if let Some(overflow_ty) = self.overflows.iter().next() {
             let mut err = struct_span_err!(
                 tcx.sess,
@@ -106,7 +101,7 @@ impl<'tcx> DropckOutlivesResult<'tcx> {
 
     pub fn into_kinds_reporting_overflows(
         self,
-        tcx: TyCtxt<'_, '_, 'tcx>,
+        tcx: TyCtxt<'tcx>,
         span: Span,
         ty: Ty<'tcx>,
     ) -> Vec<Kind<'tcx>> {
@@ -184,13 +179,13 @@ impl_stable_hash_for!(struct DtorckConstraint<'tcx> {
 /// outlive. This is similar but not *quite* the same as the
 /// `needs_drop` test in the compiler already -- that is, for every
 /// type T for which this function return true, needs-drop would
-/// return false. But the reverse does not hold: in particular,
+/// return `false`. But the reverse does not hold: in particular,
 /// `needs_drop` returns false for `PhantomData`, but it is not
 /// trivial for dropck-outlives.
 ///
 /// Note also that `needs_drop` requires a "global" type (i.e., one
 /// with erased regions), but this function does not.
-pub fn trivial_dropck_outlives<'tcx>(tcx: TyCtxt<'_, '_, 'tcx>, ty: Ty<'tcx>) -> bool {
+pub fn trivial_dropck_outlives<'tcx>(tcx: TyCtxt<'tcx>, ty: Ty<'tcx>) -> bool {
     match ty.sty {
         // None of these types have a destructor and hence they do not
         // require anything in particular to outlive the dtor's
@@ -217,7 +212,7 @@ pub fn trivial_dropck_outlives<'tcx>(tcx: TyCtxt<'_, '_, 'tcx>, ty: Ty<'tcx>) ->
 
         // (T1..Tn) and closures have same properties as T1..Tn --
         // check if *any* of those are trivial.
-        ty::Tuple(ref tys) => tys.iter().all(|t| trivial_dropck_outlives(tcx, t)),
+        ty::Tuple(ref tys) => tys.iter().all(|t| trivial_dropck_outlives(tcx, t.expect_ty())),
         ty::Closure(def_id, ref substs) => substs
             .upvar_tys(def_id, tcx)
             .all(|t| trivial_dropck_outlives(tcx, t)),

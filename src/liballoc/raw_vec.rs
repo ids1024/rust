@@ -7,10 +7,9 @@ use core::ops::Drop;
 use core::ptr::{self, NonNull, Unique};
 use core::slice;
 
-use alloc::{Alloc, Layout, Global, handle_alloc_error};
-use collections::CollectionAllocErr;
-use collections::CollectionAllocErr::*;
-use boxed::Box;
+use crate::alloc::{Alloc, Layout, Global, handle_alloc_error};
+use crate::collections::CollectionAllocErr::{self, *};
+use crate::boxed::Box;
 
 /// A low-level utility for more ergonomically allocating, reallocating, and deallocating
 /// a buffer of memory on the heap without having to worry about all the corner cases
@@ -257,7 +256,7 @@ impl<T, A: Alloc> RawVec<T, A> {
     /// # Examples
     ///
     /// ```
-    /// # #![feature(alloc, raw_vec_internals)]
+    /// # #![feature(raw_vec_internals)]
     /// # extern crate alloc;
     /// # use std::ptr;
     /// # use alloc::raw_vec::RawVec;
@@ -336,7 +335,7 @@ impl<T, A: Alloc> RawVec<T, A> {
     /// enough to want to do that it's easiest to just have a dedicated method. Slightly
     /// more efficient logic can be provided for this than the general case.
     ///
-    /// Returns true if the reallocation attempt has succeeded, or false otherwise.
+    /// Returns `true` if the reallocation attempt has succeeded.
     ///
     /// # Panics
     ///
@@ -461,7 +460,7 @@ impl<T, A: Alloc> RawVec<T, A> {
     /// # Examples
     ///
     /// ```
-    /// # #![feature(alloc, raw_vec_internals)]
+    /// # #![feature(raw_vec_internals)]
     /// # extern crate alloc;
     /// # use std::ptr;
     /// # use alloc::raw_vec::RawVec;
@@ -505,7 +504,7 @@ impl<T, A: Alloc> RawVec<T, A> {
     /// the requested space. This is not really unsafe, but the unsafe
     /// code *you* write that relies on the behavior of this function may break.
     ///
-    /// Returns true if the reallocation attempt has succeeded, or false otherwise.
+    /// Returns `true` if the reallocation attempt has succeeded.
     ///
     /// # Panics
     ///
@@ -621,14 +620,14 @@ enum Fallibility {
     Infallible,
 }
 
-use self::Fallibility::*;
+use Fallibility::*;
 
 enum ReserveStrategy {
     Exact,
     Amortized,
 }
 
-use self::ReserveStrategy::*;
+use ReserveStrategy::*;
 
 impl<T, A: Alloc> RawVec<T, A> {
     fn reserve_internal(
@@ -639,7 +638,7 @@ impl<T, A: Alloc> RawVec<T, A> {
         strategy: ReserveStrategy,
     ) -> Result<(), CollectionAllocErr> {
         unsafe {
-            use alloc::AllocErr;
+            use crate::alloc::AllocErr;
 
             // NOTE: we don't early branch on ZSTs here because we want this
             // to actually catch "asking for more than usize::MAX" in that case.
@@ -686,12 +685,14 @@ impl<T, A: Alloc> RawVec<T, A> {
 impl<T> RawVec<T, Global> {
     /// Converts the entire buffer into `Box<[T]>`.
     ///
-    /// While it is not *strictly* Undefined Behavior to call
-    /// this procedure while some of the RawVec is uninitialized,
-    /// it certainly makes it trivial to trigger it.
-    ///
     /// Note that this will correctly reconstitute any `cap` changes
     /// that may have been performed. (see description of type for details)
+    ///
+    /// # Undefined Behavior
+    ///
+    /// All elements of `RawVec<T, Global>` must be initialized. Notice that
+    /// the rules around uninitialized boxed values are not finalized yet,
+    /// but until they are, it is advisable to avoid them.
     pub unsafe fn into_box(self) -> Box<[T]> {
         // NOTE: not calling `cap()` here, actually using the real `cap` field!
         let slice = slice::from_raw_parts_mut(self.ptr(), self.cap);
@@ -733,7 +734,7 @@ unsafe impl<#[may_dangle] T, A: Alloc> Drop for RawVec<T, A> {
 
 #[inline]
 fn alloc_guard(alloc_size: usize) -> Result<(), CollectionAllocErr> {
-    if mem::size_of::<usize>() < 8 && alloc_size > ::core::isize::MAX as usize {
+    if mem::size_of::<usize>() < 8 && alloc_size > core::isize::MAX as usize {
         Err(CapacityOverflow)
     } else {
         Ok(())
@@ -753,7 +754,7 @@ mod tests {
 
     #[test]
     fn allocator_param() {
-        use alloc::AllocErr;
+        use crate::alloc::AllocErr;
 
         // Writing a test of integration between third-party
         // allocators and RawVec is a little tricky because the RawVec

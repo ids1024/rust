@@ -21,7 +21,7 @@ impl<'a> IntoCow<'a, str> for &'a str {
 
 #[test]
 fn test_from_str() {
-    let owned: Option<::std::string::String> = "string".parse().ok();
+    let owned: Option<std::string::String> = "string".parse().ok();
     assert_eq!(owned.as_ref().map(|s| &**s), Some("string"));
 }
 
@@ -54,11 +54,11 @@ fn test_from_utf8() {
 #[test]
 fn test_from_utf8_lossy() {
     let xs = b"hello";
-    let ys: Cow<str> = "hello".into_cow();
+    let ys: Cow<'_, str> = "hello".into_cow();
     assert_eq!(String::from_utf8_lossy(xs), ys);
 
     let xs = "ศไทย中华Việt Nam".as_bytes();
-    let ys: Cow<str> = "ศไทย中华Việt Nam".into_cow();
+    let ys: Cow<'_, str> = "ศไทย中华Việt Nam".into_cow();
     assert_eq!(String::from_utf8_lossy(xs), ys);
 
     let xs = b"Hello\xC2 There\xFF Goodbye";
@@ -122,7 +122,7 @@ fn test_from_utf16() {
         let s_as_utf16 = s.encode_utf16().collect::<Vec<u16>>();
         let u_as_string = String::from_utf16(&u).unwrap();
 
-        assert!(::core::char::decode_utf16(u.iter().cloned()).all(|r| r.is_ok()));
+        assert!(core::char::decode_utf16(u.iter().cloned()).all(|r| r.is_ok()));
         assert_eq!(s_as_utf16, u);
 
         assert_eq!(u_as_string, s);
@@ -523,6 +523,7 @@ fn test_reserve_exact() {
 }
 
 #[test]
+#[cfg(not(miri))] // Miri does not support signalling OOM
 fn test_try_reserve() {
 
     // These are the interesting cases:
@@ -600,6 +601,7 @@ fn test_try_reserve() {
 }
 
 #[test]
+#[cfg(not(miri))] // Miri does not support signalling OOM
 fn test_try_reserve_exact() {
 
     // This is exactly the same as test_try_reserve with the method changed.

@@ -3,21 +3,23 @@
 
 use std::str::FromStr;
 
-use session::{early_error, early_warn, Session};
-use session::search_paths::SearchPath;
+use crate::session::{early_error, early_warn, Session};
+use crate::session::search_paths::SearchPath;
 
 use rustc_target::spec::{LinkerFlavor, MergeFunctions, PanicStrategy, RelroLevel};
 use rustc_target::spec::{Target, TargetTriple};
-use lint;
-use middle::cstore;
+use crate::lint;
+use crate::middle::cstore;
 
+use syntax;
 use syntax::ast::{self, IntTy, UintTy, MetaItemKind};
 use syntax::source_map::{FileName, FilePathMapping};
 use syntax::edition::{Edition, EDITION_NAME_LIST, DEFAULT_EDITION};
 use syntax::parse::token;
 use syntax::parse;
-use syntax::symbol::Symbol;
+use syntax::symbol::{sym, Symbol};
 use syntax::feature_gate::UnstableFeatures;
+use errors::emitter::HumanReadableErrorType;
 
 use errors::{ColorConfig, FatalError, Handler};
 
@@ -96,21 +98,44 @@ pub enum LtoCli {
 }
 
 #[derive(Clone, PartialEq, Hash)]
-pub enum CrossLangLto {
+pub enum LinkerPluginLto {
     LinkerPlugin(PathBuf),
     LinkerPluginAuto,
     Disabled
 }
 
-impl CrossLangLto {
+impl LinkerPluginLto {
     pub fn enabled(&self) -> bool {
         match *self {
-            CrossLangLto::LinkerPlugin(_) |
-            CrossLangLto::LinkerPluginAuto => true,
-            CrossLangLto::Disabled => false,
+            LinkerPluginLto::LinkerPlugin(_) |
+            LinkerPluginLto::LinkerPluginAuto => true,
+            LinkerPluginLto::Disabled => false,
         }
     }
 }
+
+#[derive(Clone, PartialEq, Hash)]
+pub enum SwitchWithOptPath {
+    Enabled(Option<PathBuf>),
+    Disabled,
+}
+
+impl SwitchWithOptPath {
+    pub fn enabled(&self) -> bool {
+        match *self {
+            SwitchWithOptPath::Enabled(_) => true,
+            SwitchWithOptPath::Disabled => false,
+        }
+    }
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, RustcEncodable, RustcDecodable)]
+pub enum SymbolManglingVersion {
+    Legacy,
+    V0,
+}
+
+impl_stable_hash_via_hash!(SymbolManglingVersion);
 
 #[derive(Clone, Copy, PartialEq, Hash)]
 pub enum DebugInfo {
@@ -136,13 +161,12 @@ impl_stable_hash_via_hash!(OutputType);
 impl OutputType {
     fn is_compatible_with_codegen_units_and_single_output_file(&self) -> bool {
         match *self {
-            OutputType::Exe | OutputType::DepInfo => true,
+            OutputType::Exe | OutputType::DepInfo | OutputType::Metadata => true,
             OutputType::Bitcode
             | OutputType::Assembly
             | OutputType::LlvmAssembly
             | OutputType::Mir
-            | OutputType::Object
-            | OutputType::Metadata => false,
+            | OutputType::Object => false,
         }
     }
 
@@ -201,16 +225,24 @@ impl OutputType {
     }
 }
 
+/// The type of diagnostics output to generate.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ErrorOutputType {
-    HumanReadable(ColorConfig),
-    Json(bool),
-    Short(ColorConfig),
+    /// Output meant for the consumption of humans.
+    HumanReadable(HumanReadableErrorType),
+    /// Output that's consumed by other tools such as `rustfix` or the `RLS`.
+    Json {
+        /// Render the JSON in a human readable way (with indents and newlines).
+        pretty: bool,
+        /// The JSON output includes a `rendered` field that includes the rendered
+        /// human output.
+        json_rendered: HumanReadableErrorType,
+    },
 }
 
 impl Default for ErrorOutputType {
     fn default() -> ErrorOutputType {
-        ErrorOutputType::HumanReadable(ColorConfig::Auto)
+        ErrorOutputType::HumanReadable(HumanReadableErrorType::Default(ColorConfig::Auto))
     }
 }
 
@@ -267,21 +299,28 @@ impl OutputTypes {
 // DO NOT switch BTreeMap or BTreeSet out for an unsorted container type! That
 // would break dependency tracking for command-line arguments.
 #[derive(Clone, Hash)]
-pub struct Externs(BTreeMap<String, BTreeSet<Option<String>>>);
+pub struct Externs(BTreeMap<String, ExternEntry>);
+
+#[derive(Clone, Hash, Eq, PartialEq, Ord, PartialOrd, Debug, Default)]
+pub struct ExternEntry {
+    pub locations: BTreeSet<Option<String>>,
+    pub is_private_dep: bool
+}
 
 impl Externs {
-    pub fn new(data: BTreeMap<String, BTreeSet<Option<String>>>) -> Externs {
+    pub fn new(data: BTreeMap<String, ExternEntry>) -> Externs {
         Externs(data)
     }
 
-    pub fn get(&self, key: &str) -> Option<&BTreeSet<Option<String>>> {
+    pub fn get(&self, key: &str) -> Option<&ExternEntry> {
         self.0.get(key)
     }
 
-    pub fn iter<'a>(&'a self) -> BTreeMapIter<'a, String, BTreeSet<Option<String>>> {
+    pub fn iter<'a>(&'a self) -> BTreeMapIter<'a, String, ExternEntry> {
         self.0.iter()
     }
 }
+
 
 macro_rules! hash_option {
     ($opt_name:ident, $opt_expr:expr, $sub_hashes:expr, [UNTRACKED]) => ({});
@@ -432,9 +471,7 @@ pub enum PrintRequest {
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum BorrowckMode {
-    Ast,
     Mir,
-    Compare,
     Migrate,
 }
 
@@ -443,8 +480,6 @@ impl BorrowckMode {
     /// on the AST borrow check if the MIR-based one errors.
     pub fn migrate(self) -> bool {
         match self {
-            BorrowckMode::Ast => false,
-            BorrowckMode::Compare => false,
             BorrowckMode::Mir => false,
             BorrowckMode::Migrate => true,
         }
@@ -453,25 +488,14 @@ impl BorrowckMode {
     /// Should we emit the AST-based borrow checker errors?
     pub fn use_ast(self) -> bool {
         match self {
-            BorrowckMode::Ast => true,
-            BorrowckMode::Compare => true,
             BorrowckMode::Mir => false,
             BorrowckMode::Migrate => false,
-        }
-    }
-    /// Should we emit the MIR-based borrow checker errors?
-    pub fn use_mir(self) -> bool {
-        match self {
-            BorrowckMode::Ast => false,
-            BorrowckMode::Compare => true,
-            BorrowckMode::Mir => true,
-            BorrowckMode::Migrate => true,
         }
     }
 }
 
 pub enum Input {
-    /// Load source from file
+    /// Loads source from file
     File(PathBuf),
     Str {
         /// String that is shown in place of a filename
@@ -493,6 +517,13 @@ impl Input {
         match *self {
             Input::File(_) => None,
             Input::Str { ref mut input, .. } => Some(input),
+        }
+    }
+
+    pub fn source_name(&self) -> FileName {
+        match *self {
+            Input::File(ref ifile) => ifile.clone().into(),
+            Input::Str { ref name, .. } => name.clone(),
         }
     }
 }
@@ -519,7 +550,7 @@ impl OutputFilenames {
             .unwrap_or_else(|| self.temp_path(flavor, None))
     }
 
-    /// Get the path where a compilation artifact of the given type for the
+    /// Gets the path where a compilation artifact of the given type for the
     /// given codegen unit should be placed on disk. If codegen_unit_name is
     /// None, a path distinct from those of any codegen unit will be generated.
     pub fn temp_path(&self, flavor: OutputType, codegen_unit_name: Option<&str>) -> PathBuf {
@@ -528,7 +559,7 @@ impl OutputFilenames {
     }
 
     /// Like temp_path, but also supports things where there is no corresponding
-    /// OutputType, like no-opt-bitcode or lto-bitcode.
+    /// OutputType, like noopt-bitcode or lto-bitcode.
     pub fn temp_path_ext(&self, ext: &str, codegen_unit_name: Option<&str>) -> PathBuf {
         let base = self.out_directory.join(&self.filestem());
 
@@ -592,7 +623,7 @@ impl Default for Options {
             incremental: None,
             debugging_opts: basic_debugging_options(),
             prints: Vec::new(),
-            borrowck_mode: BorrowckMode::Ast,
+            borrowck_mode: BorrowckMode::Migrate,
             cg: basic_codegen_options(),
             error_format: ErrorOutputType::default(),
             externs: Externs(BTreeMap::new()),
@@ -611,7 +642,7 @@ impl Default for Options {
 }
 
 impl Options {
-    /// True if there is a reason to build the dep graph.
+    /// Returns `true` if there is a reason to build the dep graph.
     pub fn build_dep_graph(&self) -> bool {
         self.incremental.is_some() || self.debugging_opts.dump_dep_graph
             || self.debugging_opts.query_dep_graph
@@ -627,7 +658,7 @@ impl Options {
         FilePathMapping::new(self.remap_path_prefix.clone())
     }
 
-    /// True if there will be an output file generated
+    /// Returns `true` if there will be an output file generated
     pub fn will_create_output_file(&self) -> bool {
         !self.debugging_opts.parse_only && // The file is just being parsed
             !self.debugging_opts.ls // The file is just being queried
@@ -756,7 +787,7 @@ macro_rules! options {
         return op;
     }
 
-    impl<'a> dep_tracking::DepTrackingHash for $struct_name {
+    impl dep_tracking::DepTrackingHash for $struct_name {
         fn hash(&self, hasher: &mut DefaultHasher, error_format: ErrorOutputType) {
             let mut sub_hashes = BTreeMap::new();
             $({
@@ -787,6 +818,7 @@ macro_rules! options {
         pub const parse_opt_pathbuf: Option<&str> = Some("a path");
         pub const parse_list: Option<&str> = Some("a space-separated list of strings");
         pub const parse_opt_list: Option<&str> = Some("a space-separated list of strings");
+        pub const parse_opt_comma_list: Option<&str> = Some("a comma-separated list of strings");
         pub const parse_uint: Option<&str> = Some("a number");
         pub const parse_passes: Option<&str> =
             Some("a space-separated list of passes, or `all`");
@@ -804,19 +836,26 @@ macro_rules! options {
             Some("crate=integer");
         pub const parse_unpretty: Option<&str> =
             Some("`string` or `string=string`");
+        pub const parse_treat_err_as_bug: Option<&str> =
+            Some("either no value or a number bigger than 0");
         pub const parse_lto: Option<&str> =
             Some("either a boolean (`yes`, `no`, `on`, `off`, etc), `thin`, \
                   `fat`, or omitted");
-        pub const parse_cross_lang_lto: Option<&str> =
+        pub const parse_linker_plugin_lto: Option<&str> =
             Some("either a boolean (`yes`, `no`, `on`, `off`, etc), \
                   or the path to the linker plugin");
+        pub const parse_switch_with_opt_path: Option<&str> =
+            Some("an optional path to the profiling data output directory");
         pub const parse_merge_functions: Option<&str> =
             Some("one of: `disabled`, `trampolines`, or `aliases`");
+        pub const parse_symbol_mangling_version: Option<&str> =
+            Some("either `legacy` or `v0` (RFC 2603)");
     }
 
     #[allow(dead_code)]
     mod $mod_set {
-        use super::{$struct_name, Passes, Sanitizer, LtoCli, CrossLangLto};
+        use super::{$struct_name, Passes, Sanitizer, LtoCli, LinkerPluginLto, SwitchWithOptPath,
+            SymbolManglingVersion};
         use rustc_target::spec::{LinkerFlavor, MergeFunctions, PanicStrategy, RelroLevel};
         use std::path::PathBuf;
         use std::str::FromStr;
@@ -904,6 +943,18 @@ macro_rules! options {
             match v {
                 Some(s) => {
                     let v = s.split_whitespace().map(|s| s.to_string()).collect();
+                    *slot = Some(v);
+                    true
+                },
+                None => false,
+            }
+        }
+
+        fn parse_opt_comma_list(slot: &mut Option<Vec<String>>, v: Option<&str>)
+                      -> bool {
+            match v {
+                Some(s) => {
+                    let v = s.split(',').map(|s| s.to_string()).collect();
                     *slot = Some(v);
                     true
                 },
@@ -1010,6 +1061,13 @@ macro_rules! options {
             }
         }
 
+        fn parse_treat_err_as_bug(slot: &mut Option<usize>, v: Option<&str>) -> bool {
+            match v {
+                Some(s) => { *slot = s.parse().ok().filter(|&x| x != 0); slot.unwrap_or(0) != 0 }
+                None => { *slot = Some(1); true }
+            }
+        }
+
         fn parse_lto(slot: &mut LtoCli, v: Option<&str>) -> bool {
             if v.is_some() {
                 let mut bool_arg = None;
@@ -1032,22 +1090,30 @@ macro_rules! options {
             true
         }
 
-        fn parse_cross_lang_lto(slot: &mut CrossLangLto, v: Option<&str>) -> bool {
+        fn parse_linker_plugin_lto(slot: &mut LinkerPluginLto, v: Option<&str>) -> bool {
             if v.is_some() {
                 let mut bool_arg = None;
                 if parse_opt_bool(&mut bool_arg, v) {
                     *slot = if bool_arg.unwrap() {
-                        CrossLangLto::LinkerPluginAuto
+                        LinkerPluginLto::LinkerPluginAuto
                     } else {
-                        CrossLangLto::Disabled
+                        LinkerPluginLto::Disabled
                     };
                     return true
                 }
             }
 
             *slot = match v {
-                None => CrossLangLto::LinkerPluginAuto,
-                Some(path) => CrossLangLto::LinkerPlugin(PathBuf::from(path)),
+                None => LinkerPluginLto::LinkerPluginAuto,
+                Some(path) => LinkerPluginLto::LinkerPlugin(PathBuf::from(path)),
+            };
+            true
+        }
+
+        fn parse_switch_with_opt_path(slot: &mut SwitchWithOptPath, v: Option<&str>) -> bool {
+            *slot = match v {
+                None => SwitchWithOptPath::Enabled(None),
+                Some(path) => SwitchWithOptPath::Enabled(Some(PathBuf::from(path))),
             };
             true
         }
@@ -1057,6 +1123,18 @@ macro_rules! options {
                 Some(mergefunc) => *slot = Some(mergefunc),
                 _ => return false,
             }
+            true
+        }
+
+        fn parse_symbol_mangling_version(
+            slot: &mut SymbolManglingVersion,
+            v: Option<&str>,
+        ) -> bool {
+            *slot = match v {
+                Some("legacy") => SymbolManglingVersion::Legacy,
+                Some("v0") => SymbolManglingVersion::V0,
+                _ => return false,
+            };
             true
         }
     }
@@ -1140,6 +1218,10 @@ options! {CodegenOptions, CodegenSetter, basic_codegen_options,
         "allow the linker to link its default libraries"),
     linker_flavor: Option<LinkerFlavor> = (None, parse_linker_flavor, [UNTRACKED],
                                            "Linker flavor"),
+    linker_plugin_lto: LinkerPluginLto = (LinkerPluginLto::Disabled,
+        parse_linker_plugin_lto, [TRACKED],
+        "generate build artifacts that are compatible with linker-based LTO."),
+
 }
 
 options! {DebuggingOptions, DebuggingSetter, basic_debugging_options,
@@ -1154,28 +1236,17 @@ options! {DebuggingOptions, DebuggingSetter, basic_debugging_options,
     identify_regions: bool = (false, parse_bool, [UNTRACKED],
         "make unnamed regions display as '# (where # is some non-ident unique id)"),
     borrowck: Option<String> = (None, parse_opt_string, [UNTRACKED],
-        "select which borrowck is used (`ast`, `mir`, `migrate`, or `compare`)"),
-    two_phase_borrows: bool = (false, parse_bool, [UNTRACKED],
-        "use two-phase reserved/active distinction for `&mut` borrows in MIR borrowck"),
-    two_phase_beyond_autoref: bool = (false, parse_bool, [UNTRACKED],
-        "when using two-phase-borrows, allow two phases even for non-autoref `&mut` borrows"),
+        "select which borrowck is used (`mir` or `migrate`)"),
     time_passes: bool = (false, parse_bool, [UNTRACKED],
         "measure time of each rustc pass"),
-    count_llvm_insns: bool = (false, parse_bool,
-        [UNTRACKED_WITH_WARNING(true,
-        "The output generated by `-Z count_llvm_insns` might not be reliable \
-         when used with incremental compilation")],
-        "count where LLVM instrs originate"),
+    time: bool = (false, parse_bool, [UNTRACKED],
+        "measure time of rustc processes"),
     time_llvm_passes: bool = (false, parse_bool, [UNTRACKED_WITH_WARNING(true,
         "The output of `-Z time-llvm-passes` will only reflect timings of \
          re-codegened modules when used with incremental compilation" )],
         "measure time of each LLVM pass"),
     input_stats: bool = (false, parse_bool, [UNTRACKED],
         "gather statistics about the input"),
-    codegen_stats: bool = (false, parse_bool, [UNTRACKED_WITH_WARNING(true,
-        "The output of `-Z codegen-stats` might not be accurate when incremental \
-         compilation is enabled")],
-        "gather codegen statistics"),
     asm_comments: bool = (false, parse_bool, [TRACKED],
         "generate comments into the assembly (may change behavior)"),
     verify_llvm_ir: bool = (false, parse_bool, [TRACKED],
@@ -1194,8 +1265,8 @@ options! {DebuggingOptions, DebuggingSetter, basic_debugging_options,
         "prints the llvm optimization passes being run"),
     ast_json: bool = (false, parse_bool, [UNTRACKED],
         "print the AST as JSON and halt"),
-    query_threads: Option<usize> = (None, parse_opt_uint, [UNTRACKED],
-        "execute queries on a thread pool with N threads"),
+    threads: Option<usize> = (None, parse_opt_uint, [UNTRACKED],
+        "use a thread pool with N threads"),
     ast_json_noexpand: bool = (false, parse_bool, [UNTRACKED],
         "print the pre-expansion AST as JSON and halt"),
     ls: bool = (false, parse_bool, [UNTRACKED],
@@ -1216,10 +1287,12 @@ options! {DebuggingOptions, DebuggingSetter, basic_debugging_options,
          Use with RUST_REGION_GRAPH=help for more info"),
     parse_only: bool = (false, parse_bool, [UNTRACKED],
         "parse only; do not compile, assemble, or link"),
+    dual_proc_macros: bool = (false, parse_bool, [TRACKED],
+        "load proc macros for both target and host, but only link to the target"),
     no_codegen: bool = (false, parse_bool, [TRACKED],
         "run all passes except codegen; no output"),
-    treat_err_as_bug: bool = (false, parse_bool, [TRACKED],
-        "treat all errors that occur as bugs"),
+    treat_err_as_bug: Option<usize> = (None, parse_treat_err_as_bug, [TRACKED],
+        "treat error number `val` that occurs as bug"),
     report_delayed_bugs: bool = (false, parse_bool, [TRACKED],
         "immediately print bugs registered with `delay_span_bug`"),
     external_macro_backtrace: bool = (false, parse_bool, [UNTRACKED],
@@ -1228,6 +1301,8 @@ options! {DebuggingOptions, DebuggingSetter, basic_debugging_options,
         "show extended diagnostic help"),
     continue_parse_after_error: bool = (false, parse_bool, [TRACKED],
         "attempt to recover from parse errors (experimental)"),
+    dep_tasks: bool = (false, parse_bool, [UNTRACKED],
+        "print tasks that execute and the color their dep node gets (requires debug build)"),
     incremental: Option<String> = (None, parse_opt_string, [UNTRACKED],
         "enable incremental compilation (experimental)"),
     incremental_queries: bool = (true, parse_bool, [UNTRACKED],
@@ -1300,6 +1375,10 @@ options! {DebuggingOptions, DebuggingSetter, basic_debugging_options,
         "print some statistics about AST and HIR"),
     always_encode_mir: bool = (false, parse_bool, [TRACKED],
         "encode MIR of all functions into the crate metadata"),
+    json_rendered: Option<String> = (None, parse_opt_string, [UNTRACKED],
+        "describes how to render the `rendered` field of json diagnostics"),
+    unleash_the_miri_inside_of_you: bool = (false, parse_bool, [TRACKED],
+        "take the breaks off const evaluation. NOTE: this is unsound"),
     osx_rpath_install_name: bool = (false, parse_bool, [TRACKED],
         "pass `-install_name @rpath/...` to the macOS linker"),
     sanitizer: Option<Sanitizer> = (None, parse_sanitizer, [TRACKED],
@@ -1316,9 +1395,10 @@ options! {DebuggingOptions, DebuggingSetter, basic_debugging_options,
         "extra arguments to prepend to the linker invocation (space separated)"),
     profile: bool = (false, parse_bool, [TRACKED],
                      "insert profiling code"),
-    pgo_gen: Option<String> = (None, parse_opt_string, [TRACKED],
+    pgo_gen: SwitchWithOptPath = (SwitchWithOptPath::Disabled,
+        parse_switch_with_opt_path, [TRACKED],
         "Generate PGO profile data, to a given file, or to the default location if it's empty."),
-    pgo_use: String = (String::new(), parse_string, [TRACKED],
+    pgo_use: Option<PathBuf> = (None, parse_opt_pathbuf, [TRACKED],
         "Use PGO profile data from the given profile file."),
     disable_instrumentation_preinliner: bool = (false, parse_bool, [TRACKED],
         "Disable the instrumentation pre-inliner, useful for profiling / PGO."),
@@ -1376,8 +1456,6 @@ options! {DebuggingOptions, DebuggingSetter, basic_debugging_options,
         "make the current crate share its generic instantiations"),
     chalk: bool = (false, parse_bool, [TRACKED],
         "enable the experimental Chalk-based trait solving engine"),
-    cross_lang_lto: CrossLangLto = (CrossLangLto::Disabled, parse_cross_lang_lto, [TRACKED],
-        "generate build artifacts that are compatible with linker-based LTO."),
     no_parallel_llvm: bool = (false, parse_bool, [UNTRACKED],
         "don't run LLVM in parallel (while keeping codegen-units and ThinLTO)"),
     no_leak_check: bool = (false, parse_bool, [UNTRACKED],
@@ -1386,10 +1464,11 @@ options! {DebuggingOptions, DebuggingSetter, basic_debugging_options,
         "don't interleave execution of lints; allows benchmarking individual lints"),
     crate_attr: Vec<String> = (Vec::new(), parse_string_push, [TRACKED],
         "inject the given attribute in the crate"),
-    self_profile: bool = (false, parse_bool, [UNTRACKED],
-        "run the self profiler"),
-    profile_json: bool = (false, parse_bool, [UNTRACKED],
-        "output a json file with profiler results"),
+    self_profile: SwitchWithOptPath = (SwitchWithOptPath::Disabled,
+        parse_switch_with_opt_path, [UNTRACKED],
+        "run the self profiler and output the raw event data"),
+    self_profile_events: Option<Vec<String>> = (None, parse_opt_comma_list, [UNTRACKED],
+        "specifies which kinds of events get recorded by the self profiler"),
     emit_stack_sizes: bool = (false, parse_bool, [UNTRACKED],
         "emits a section containing stack size metadata"),
     plt: Option<bool> = (None, parse_opt_bool, [TRACKED],
@@ -1399,6 +1478,13 @@ options! {DebuggingOptions, DebuggingSetter, basic_debugging_options,
     merge_functions: Option<MergeFunctions> = (None, parse_merge_functions, [TRACKED],
         "control the operation of the MergeFunctions LLVM pass, taking
          the same values as the target option of the same name"),
+    allow_features: Option<Vec<String>> = (None, parse_opt_comma_list, [TRACKED],
+        "only allow the listed language features to be enabled in code (space separated)"),
+    emit_artifact_notifications: bool = (false, parse_bool, [UNTRACKED],
+        "emit notifications after each artifact has been output (only in the JSON format)"),
+    symbol_mangling_version: SymbolManglingVersion = (SymbolManglingVersion::Legacy,
+        parse_symbol_mangling_version, [TRACKED],
+        "which mangling version to use for symbol names"),
 }
 
 pub fn default_lib_output() -> CrateType {
@@ -1438,33 +1524,42 @@ pub fn default_configuration(sess: &Session) -> ast::CrateConfig {
         Some(Symbol::intern(vendor)),
     ));
     if sess.target.target.options.has_elf_tls {
-        ret.insert((Symbol::intern("target_thread_local"), None));
+        ret.insert((sym::target_thread_local, None));
     }
     for &i in &[8, 16, 32, 64, 128] {
         if i >= min_atomic_width && i <= max_atomic_width {
             let s = i.to_string();
             ret.insert((
-                Symbol::intern("target_has_atomic"),
+                sym::target_has_atomic,
                 Some(Symbol::intern(&s)),
             ));
             if &s == wordsz {
                 ret.insert((
-                    Symbol::intern("target_has_atomic"),
+                    sym::target_has_atomic,
                     Some(Symbol::intern("ptr")),
                 ));
             }
         }
     }
     if atomic_cas {
-        ret.insert((Symbol::intern("target_has_atomic"), Some(Symbol::intern("cas"))));
+        ret.insert((sym::target_has_atomic, Some(Symbol::intern("cas"))));
     }
     if sess.opts.debug_assertions {
         ret.insert((Symbol::intern("debug_assertions"), None));
     }
     if sess.opts.crate_types.contains(&CrateType::ProcMacro) {
-        ret.insert((Symbol::intern("proc_macro"), None));
+        ret.insert((sym::proc_macro, None));
     }
     ret
+}
+
+/// Converts the crate cfg! configuration from String to Symbol.
+/// `rustc_interface::interface::Config` accepts this in the compiler configuration,
+/// but the symbol interner is not yet set up then, so we must convert it later.
+pub fn to_crate_config(cfg: FxHashSet<(String, Option<String>)>) -> ast::CrateConfig {
+    cfg.into_iter()
+       .map(|(a, b)| (Symbol::intern(&a), b.map(|b| Symbol::intern(&b))))
+       .collect()
 }
 
 pub fn build_configuration(sess: &Session, mut user_cfg: ast::CrateConfig) -> ast::CrateConfig {
@@ -1473,7 +1568,7 @@ pub fn build_configuration(sess: &Session, mut user_cfg: ast::CrateConfig) -> as
     let default_cfg = default_configuration(sess);
     // If the user wants a test runner, then add the test cfg
     if sess.opts.test {
-        user_cfg.insert((Symbol::intern("test"), None));
+        user_cfg.insert((sym::test, None));
     }
     user_cfg.extend(default_cfg.iter().cloned());
     user_cfg
@@ -1654,6 +1749,12 @@ pub fn rustc_short_optgroups() -> Vec<RustcOptGroup> {
             "Specify the name of the crate being built",
             "NAME",
         ),
+        opt::opt_s(
+            "",
+            "edition",
+            "Specify which edition of the compiler to use when compiling code.",
+            EDITION_NAME_LIST,
+        ),
         opt::multi_s(
             "",
             "emit",
@@ -1664,8 +1765,7 @@ pub fn rustc_short_optgroups() -> Vec<RustcOptGroup> {
         opt::multi_s(
             "",
             "print",
-            "Comma separated list of compiler information to \
-             print on stdout",
+            "Compiler information to print on stdout",
             "[crate-name|file-names|sysroot|cfg|target-list|\
              target-cpus|target-features|relocation-models|\
              code-models|tls-models|target-spec-json|native-static-libs]",
@@ -1724,6 +1824,12 @@ pub fn rustc_optgroups() -> Vec<RustcOptGroup> {
             "Specify where an external rust library is located",
             "NAME=PATH",
         ),
+        opt::multi_s(
+            "",
+            "extern-private",
+            "Specify where an extern rust library is located, marking it as a private dependency",
+            "NAME=PATH",
+        ),
         opt::opt_s("", "sysroot", "Override the system root", "PATH"),
         opt::multi("Z", "", "Set internal debugging options", "FLAG"),
         opt::opt_s(
@@ -1731,6 +1837,12 @@ pub fn rustc_optgroups() -> Vec<RustcOptGroup> {
             "error-format",
             "How errors and other messages are produced",
             "human|json|short",
+        ),
+        opt::opt(
+            "",
+            "json-rendered",
+            "Choose `rendered` field of json diagnostics render scheme",
+            "plain|termcolor",
         ),
         opt::opt_s(
             "",
@@ -1750,12 +1862,6 @@ pub fn rustc_optgroups() -> Vec<RustcOptGroup> {
                   `expanded,identified` (fully parenthesized, AST nodes with IDs).",
             "TYPE",
         ),
-        opt::opt_s(
-            "",
-            "edition",
-            "Specify which edition of the compiler to use when compiling code.",
-            EDITION_NAME_LIST,
-        ),
         opt::multi_s(
             "",
             "remap-path-prefix",
@@ -1767,10 +1873,9 @@ pub fn rustc_optgroups() -> Vec<RustcOptGroup> {
 }
 
 // Convert strings provided as --cfg [cfgspec] into a crate_cfg
-pub fn parse_cfgspecs(cfgspecs: Vec<String>) -> ast::CrateConfig {
-    cfgspecs
-        .into_iter()
-        .map(|s| {
+pub fn parse_cfgspecs(cfgspecs: Vec<String>) -> FxHashSet<(String, Option<String>)> {
+    syntax::with_default_globals(move || {
+        let cfg = cfgspecs.into_iter().map(|s| {
             let sess = parse::ParseSess::new(FilePathMapping::empty());
             let filename = FileName::cfg_spec_source_code(&s);
             let mut parser = parse::new_parser_from_source_str(&sess, filename, s.to_string());
@@ -1782,7 +1887,7 @@ pub fn parse_cfgspecs(cfgspecs: Vec<String>) -> ast::CrateConfig {
 
             match &mut parser.parse_meta_item() {
                 Ok(meta_item) if parser.token == token::Eof => {
-                    if meta_item.ident.segments.len() != 1 {
+                    if meta_item.path.segments.len() != 1 {
                         error!("argument key must be an identifier");
                     }
                     match &meta_item.node {
@@ -1793,7 +1898,8 @@ pub fn parse_cfgspecs(cfgspecs: Vec<String>) -> ast::CrateConfig {
                             error!("argument value must be a string");
                         }
                         MetaItemKind::NameValue(..) | MetaItemKind::Word => {
-                            return (meta_item.name(), meta_item.value_str());
+                            let ident = meta_item.ident().expect("multi-segment cfg key");
+                            return (ident.name, meta_item.value_str());
                         }
                     }
                 }
@@ -1802,8 +1908,11 @@ pub fn parse_cfgspecs(cfgspecs: Vec<String>) -> ast::CrateConfig {
             }
 
             error!(r#"expected `key` or `key="value"`"#);
-        })
-        .collect::<ast::CrateConfig>()
+        }).collect::<ast::CrateConfig>();
+        cfg.into_iter().map(|(a, b)| {
+            (a.to_string(), b.map(|b| b.to_string()))
+        }).collect()
+    })
 }
 
 pub fn get_cmd_lint_options(matches: &getopts::Matches,
@@ -1831,7 +1940,7 @@ pub fn get_cmd_lint_options(matches: &getopts::Matches,
 
 pub fn build_session_options_and_crate_config(
     matches: &getopts::Matches,
-) -> (Options, ast::CrateConfig) {
+) -> (Options, FxHashSet<(String, Option<String>)>) {
     let color = match matches.opt_str("color").as_ref().map(|s| &s[..]) {
         Some("auto") => ColorConfig::Auto,
         Some("always") => ColorConfig::Always,
@@ -1875,6 +1984,17 @@ pub fn build_session_options_and_crate_config(
         )
     }
 
+    let json_rendered = matches.opt_str("json-rendered").and_then(|s| match s.as_str() {
+        "plain" => None,
+        "termcolor" => Some(HumanReadableErrorType::Default(ColorConfig::Always)),
+        _ => early_error(
+            ErrorOutputType::default(),
+            &format!(
+                "argument for --json-rendered must be `plain` or `termcolor` (instead was `{}`)",
+                s,
+            ),
+        ),
+    }).unwrap_or(HumanReadableErrorType::Default(ColorConfig::Never));
 
     // We need the opts_present check because the driver will send us Matches
     // with only stable options if no unstable options are used. Since error-format
@@ -1882,14 +2002,17 @@ pub fn build_session_options_and_crate_config(
     // opt_present because the latter will panic.
     let error_format = if matches.opts_present(&["error-format".to_owned()]) {
         match matches.opt_str("error-format").as_ref().map(|s| &s[..]) {
-            Some("human") => ErrorOutputType::HumanReadable(color),
-            Some("json") => ErrorOutputType::Json(false),
-            Some("pretty-json") => ErrorOutputType::Json(true),
-            Some("short") => ErrorOutputType::Short(color),
-            None => ErrorOutputType::HumanReadable(color),
+            None |
+            Some("human") => ErrorOutputType::HumanReadable(HumanReadableErrorType::Default(color)),
+            Some("human-annotate-rs") => {
+                ErrorOutputType::HumanReadable(HumanReadableErrorType::AnnotateSnippet(color))
+            },
+            Some("json") => ErrorOutputType::Json { pretty: false, json_rendered },
+            Some("pretty-json") => ErrorOutputType::Json { pretty: true, json_rendered },
+            Some("short") => ErrorOutputType::HumanReadable(HumanReadableErrorType::Short(color)),
 
             Some(arg) => early_error(
-                ErrorOutputType::HumanReadable(color),
+                ErrorOutputType::HumanReadable(HumanReadableErrorType::Default(color)),
                 &format!(
                     "argument for --error-format must be `human`, `json` or \
                      `short` (instead was `{}`)",
@@ -1898,25 +2021,38 @@ pub fn build_session_options_and_crate_config(
             ),
         }
     } else {
-        ErrorOutputType::HumanReadable(color)
+        ErrorOutputType::HumanReadable(HumanReadableErrorType::Default(color))
     };
 
     let unparsed_crate_types = matches.opt_strs("crate-type");
     let crate_types = parse_crate_types_from_list(unparsed_crate_types)
         .unwrap_or_else(|e| early_error(error_format, &e[..]));
 
+
     let (lint_opts, describe_lints, lint_cap) = get_cmd_lint_options(matches, error_format);
 
     let mut debugging_opts = build_debugging_options(matches, error_format);
 
-    if !debugging_opts.unstable_options && error_format == ErrorOutputType::Json(true) {
-        early_error(
-            ErrorOutputType::Json(false),
-            "--error-format=pretty-json is unstable",
-        );
+    if !debugging_opts.unstable_options {
+        if matches.opt_str("json-rendered").is_some() {
+            early_error(error_format, "`--json-rendered=x` is unstable");
+        }
+        if let ErrorOutputType::Json { pretty: true, json_rendered } = error_format {
+            early_error(
+                ErrorOutputType::Json { pretty: false, json_rendered },
+                "--error-format=pretty-json is unstable",
+            );
+        }
+        if let ErrorOutputType::HumanReadable(HumanReadableErrorType::AnnotateSnippet(_)) =
+            error_format {
+            early_error(
+                ErrorOutputType::Json { pretty: false, json_rendered },
+                "--error-format=human-annotate-rs is unstable",
+            );
+        }
     }
 
-    if debugging_opts.pgo_gen.is_some() && !debugging_opts.pgo_use.is_empty() {
+    if debugging_opts.pgo_gen.enabled() && debugging_opts.pgo_use.is_some() {
         early_error(
             error_format,
             "options `-Z pgo-gen` and `-Z pgo-use` are exclusive",
@@ -1986,17 +2122,17 @@ pub fn build_session_options_and_crate_config(
         }
     }
 
-    if debugging_opts.query_threads == Some(0) {
+    if debugging_opts.threads == Some(0) {
         early_error(
             error_format,
-            "Value for query threads must be a positive nonzero integer",
+            "Value for threads must be a positive nonzero integer",
         );
     }
 
-    if debugging_opts.query_threads.unwrap_or(1) > 1 && debugging_opts.fuel.is_some() {
+    if debugging_opts.threads.unwrap_or(1) > 1 && debugging_opts.fuel.is_some() {
         early_error(
             error_format,
-            "Optimization fuel is incompatible with multiple query threads",
+            "Optimization fuel is incompatible with multiple threads",
         );
     }
 
@@ -2075,10 +2211,21 @@ pub fn build_session_options_and_crate_config(
         TargetTriple::from_triple(host_triple())
     };
     let opt_level = {
-        if matches.opt_present("O") {
-            if cg.opt_level.is_some() {
-                early_error(error_format, "-O and -C opt-level both provided");
+        // The `-O` and `-C opt-level` flags specify the same setting, so we want to be able
+        // to use them interchangeably. However, because they're technically different flags,
+        // we need to work out manually which should take precedence if both are supplied (i.e.
+        // the rightmost flag). We do this by finding the (rightmost) position of both flags and
+        // comparing them. Note that if a flag is not found, its position will be `None`, which
+        // always compared less than `Some(_)`.
+        let max_o = matches.opt_positions("O").into_iter().max();
+        let max_c = matches.opt_strs_pos("C").into_iter().flat_map(|(i, s)| {
+            if let Some("opt-level") = s.splitn(2, '=').next() {
+                Some(i)
+            } else {
+                None
             }
+        }).max();
+        if max_o > max_c {
             OptLevel::Default
         } else {
             match cg.opt_level.as_ref().map(String::as_ref) {
@@ -2102,11 +2249,19 @@ pub fn build_session_options_and_crate_config(
             }
         }
     };
+    // The `-g` and `-C debuginfo` flags specify the same setting, so we want to be able
+    // to use them interchangeably. See the note above (regarding `-O` and `-C opt-level`)
+    // for more details.
     let debug_assertions = cg.debug_assertions.unwrap_or(opt_level == OptLevel::No);
-    let debuginfo = if matches.opt_present("g") {
-        if cg.debuginfo.is_some() {
-            early_error(error_format, "-g and -C debuginfo both provided");
+    let max_g = matches.opt_positions("g").into_iter().max();
+    let max_c = matches.opt_strs_pos("C").into_iter().flat_map(|(i, s)| {
+        if let Some("debuginfo") = s.splitn(2, '=').next() {
+            Some(i)
+        } else {
+            None
         }
+    }).max();
+    let debuginfo = if max_g > max_c {
         DebugInfo::Full
     } else {
         match cg.debuginfo {
@@ -2204,10 +2359,8 @@ pub fn build_session_options_and_crate_config(
     }));
 
     let borrowck_mode = match debugging_opts.borrowck.as_ref().map(|s| &s[..]) {
-        None | Some("ast") => BorrowckMode::Ast,
+        None | Some("migrate") => BorrowckMode::Migrate,
         Some("mir") => BorrowckMode::Mir,
-        Some("compare") => BorrowckMode::Compare,
-        Some("migrate") => BorrowckMode::Migrate,
         Some(m) => early_error(error_format, &format!("unknown borrowck mode `{}`", m)),
     };
 
@@ -2218,8 +2371,22 @@ pub fn build_session_options_and_crate_config(
         );
     }
 
-    let mut externs: BTreeMap<_, BTreeSet<_>> = BTreeMap::new();
-    for arg in &matches.opt_strs("extern") {
+    if matches.opt_present("extern-private") && !debugging_opts.unstable_options {
+        early_error(
+            ErrorOutputType::default(),
+            "'--extern-private' is unstable and only \
+            available for nightly builds of rustc."
+        )
+    }
+
+    // We start out with a Vec<(Option<String>, bool)>>,
+    // and later convert it into a BTreeSet<(Option<String>, bool)>
+    // This allows to modify entries in-place to set their correct
+    // 'public' value
+    let mut externs: BTreeMap<String, ExternEntry> = BTreeMap::new();
+    for (arg, private) in matches.opt_strs("extern").into_iter().map(|v| (v, false))
+        .chain(matches.opt_strs("extern-private").into_iter().map(|v| (v, true))) {
+
         let mut parts = arg.splitn(2, '=');
         let name = parts.next().unwrap_or_else(||
             early_error(error_format, "--extern value must not be empty"));
@@ -2232,10 +2399,17 @@ pub fn build_session_options_and_crate_config(
             );
         };
 
-        externs
+        let entry = externs
             .entry(name.to_owned())
-            .or_default()
-            .insert(location);
+            .or_default();
+
+
+        entry.locations.insert(location.clone());
+
+        // Crates start out being not private,
+        // and go to being private if we see an '--extern-private'
+        // flag
+        entry.is_private_dep |= private;
     }
 
     let crate_name = matches.opt_str("crate-name");
@@ -2319,7 +2493,7 @@ pub mod nightly_options {
     use getopts;
     use syntax::feature_gate::UnstableFeatures;
     use super::{ErrorOutputType, OptionStability, RustcOptGroup};
-    use session::early_error;
+    use crate::session::early_error;
 
     pub fn is_unstable_enabled(matches: &getopts::Matches) -> bool {
         is_nightly_build()
@@ -2408,14 +2582,15 @@ impl fmt::Display for CrateType {
 /// we have an opt-in scheme here, so one is hopefully forced to think about
 /// how the hash should be calculated when adding a new command-line argument.
 mod dep_tracking {
-    use lint;
-    use middle::cstore;
+    use crate::lint;
+    use crate::middle::cstore;
     use std::collections::BTreeMap;
     use std::hash::Hash;
     use std::path::PathBuf;
     use std::collections::hash_map::DefaultHasher;
     use super::{CrateType, DebugInfo, ErrorOutputType, OptLevel, OutputTypes,
-                Passes, Sanitizer, LtoCli, CrossLangLto};
+                Passes, Sanitizer, LtoCli, LinkerPluginLto, SwitchWithOptPath,
+                SymbolManglingVersion};
     use syntax::feature_gate::UnstableFeatures;
     use rustc_target::spec::{MergeFunctions, PanicStrategy, RelroLevel, TargetTriple};
     use syntax::edition::Edition;
@@ -2460,6 +2635,7 @@ mod dep_tracking {
     impl_dep_tracking_hash_via_hash!(Option<usize>);
     impl_dep_tracking_hash_via_hash!(Option<String>);
     impl_dep_tracking_hash_via_hash!(Option<(String, u64)>);
+    impl_dep_tracking_hash_via_hash!(Option<Vec<String>>);
     impl_dep_tracking_hash_via_hash!(Option<MergeFunctions>);
     impl_dep_tracking_hash_via_hash!(Option<PanicStrategy>);
     impl_dep_tracking_hash_via_hash!(Option<RelroLevel>);
@@ -2481,7 +2657,9 @@ mod dep_tracking {
     impl_dep_tracking_hash_via_hash!(Option<Sanitizer>);
     impl_dep_tracking_hash_via_hash!(TargetTriple);
     impl_dep_tracking_hash_via_hash!(Edition);
-    impl_dep_tracking_hash_via_hash!(CrossLangLto);
+    impl_dep_tracking_hash_via_hash!(LinkerPluginLto);
+    impl_dep_tracking_hash_via_hash!(SwitchWithOptPath);
+    impl_dep_tracking_hash_via_hash!(SymbolManglingVersion);
 
     impl_dep_tracking_hash_for_sortable_vec_of!(String);
     impl_dep_tracking_hash_for_sortable_vec_of!(PathBuf);
@@ -2540,690 +2718,4 @@ mod dep_tracking {
 }
 
 #[cfg(test)]
-mod tests {
-    use errors;
-    use getopts;
-    use lint;
-    use middle::cstore;
-    use session::config::{build_configuration, build_session_options_and_crate_config};
-    use session::config::{LtoCli, CrossLangLto};
-    use session::build_session;
-    use session::search_paths::SearchPath;
-    use std::collections::{BTreeMap, BTreeSet};
-    use std::iter::FromIterator;
-    use std::path::PathBuf;
-    use super::{Externs, OutputType, OutputTypes};
-    use rustc_target::spec::{MergeFunctions, PanicStrategy, RelroLevel};
-    use syntax::symbol::Symbol;
-    use syntax::edition::{Edition, DEFAULT_EDITION};
-    use syntax;
-    use super::Options;
-
-    fn optgroups() -> getopts::Options {
-        let mut opts = getopts::Options::new();
-        for group in super::rustc_optgroups() {
-            (group.apply)(&mut opts);
-        }
-        return opts;
-    }
-
-    fn mk_map<K: Ord, V>(entries: Vec<(K, V)>) -> BTreeMap<K, V> {
-        BTreeMap::from_iter(entries.into_iter())
-    }
-
-    fn mk_set<V: Ord>(entries: Vec<V>) -> BTreeSet<V> {
-        BTreeSet::from_iter(entries.into_iter())
-    }
-
-    // When the user supplies --test we should implicitly supply --cfg test
-    #[test]
-    fn test_switch_implies_cfg_test() {
-        syntax::with_globals(|| {
-            let matches = &match optgroups().parse(&["--test".to_string()]) {
-                Ok(m) => m,
-                Err(f) => panic!("test_switch_implies_cfg_test: {}", f),
-            };
-            let registry = errors::registry::Registry::new(&[]);
-            let (sessopts, cfg) = build_session_options_and_crate_config(matches);
-            let sess = build_session(sessopts, None, registry);
-            let cfg = build_configuration(&sess, cfg);
-            assert!(cfg.contains(&(Symbol::intern("test"), None)));
-        });
-    }
-
-    // When the user supplies --test and --cfg test, don't implicitly add
-    // another --cfg test
-    #[test]
-    fn test_switch_implies_cfg_test_unless_cfg_test() {
-        syntax::with_globals(|| {
-            let matches = &match optgroups().parse(&["--test".to_string(),
-                                                     "--cfg=test".to_string()]) {
-                Ok(m) => m,
-                Err(f) => panic!("test_switch_implies_cfg_test_unless_cfg_test: {}", f),
-            };
-            let registry = errors::registry::Registry::new(&[]);
-            let (sessopts, cfg) = build_session_options_and_crate_config(matches);
-            let sess = build_session(sessopts, None, registry);
-            let cfg = build_configuration(&sess, cfg);
-            let mut test_items = cfg.iter().filter(|&&(name, _)| name == "test");
-            assert!(test_items.next().is_some());
-            assert!(test_items.next().is_none());
-        });
-    }
-
-    #[test]
-    fn test_can_print_warnings() {
-        syntax::with_globals(|| {
-            let matches = optgroups().parse(&["-Awarnings".to_string()]).unwrap();
-            let registry = errors::registry::Registry::new(&[]);
-            let (sessopts, _) = build_session_options_and_crate_config(&matches);
-            let sess = build_session(sessopts, None, registry);
-            assert!(!sess.diagnostic().flags.can_emit_warnings);
-        });
-
-        syntax::with_globals(|| {
-            let matches = optgroups()
-                .parse(&["-Awarnings".to_string(), "-Dwarnings".to_string()])
-                .unwrap();
-            let registry = errors::registry::Registry::new(&[]);
-            let (sessopts, _) = build_session_options_and_crate_config(&matches);
-            let sess = build_session(sessopts, None, registry);
-            assert!(sess.diagnostic().flags.can_emit_warnings);
-        });
-
-        syntax::with_globals(|| {
-            let matches = optgroups().parse(&["-Adead_code".to_string()]).unwrap();
-            let registry = errors::registry::Registry::new(&[]);
-            let (sessopts, _) = build_session_options_and_crate_config(&matches);
-            let sess = build_session(sessopts, None, registry);
-            assert!(sess.diagnostic().flags.can_emit_warnings);
-        });
-    }
-
-    #[test]
-    fn test_output_types_tracking_hash_different_paths() {
-        let mut v1 = Options::default();
-        let mut v2 = Options::default();
-        let mut v3 = Options::default();
-
-        v1.output_types =
-            OutputTypes::new(&[(OutputType::Exe, Some(PathBuf::from("./some/thing")))]);
-        v2.output_types =
-            OutputTypes::new(&[(OutputType::Exe, Some(PathBuf::from("/some/thing")))]);
-        v3.output_types = OutputTypes::new(&[(OutputType::Exe, None)]);
-
-        assert!(v1.dep_tracking_hash() != v2.dep_tracking_hash());
-        assert!(v1.dep_tracking_hash() != v3.dep_tracking_hash());
-        assert!(v2.dep_tracking_hash() != v3.dep_tracking_hash());
-
-        // Check clone
-        assert_eq!(v1.dep_tracking_hash(), v1.clone().dep_tracking_hash());
-        assert_eq!(v2.dep_tracking_hash(), v2.clone().dep_tracking_hash());
-        assert_eq!(v3.dep_tracking_hash(), v3.clone().dep_tracking_hash());
-    }
-
-    #[test]
-    fn test_output_types_tracking_hash_different_construction_order() {
-        let mut v1 = Options::default();
-        let mut v2 = Options::default();
-
-        v1.output_types = OutputTypes::new(&[
-            (OutputType::Exe, Some(PathBuf::from("./some/thing"))),
-            (OutputType::Bitcode, Some(PathBuf::from("./some/thing.bc"))),
-        ]);
-
-        v2.output_types = OutputTypes::new(&[
-            (OutputType::Bitcode, Some(PathBuf::from("./some/thing.bc"))),
-            (OutputType::Exe, Some(PathBuf::from("./some/thing"))),
-        ]);
-
-        assert_eq!(v1.dep_tracking_hash(), v2.dep_tracking_hash());
-
-        // Check clone
-        assert_eq!(v1.dep_tracking_hash(), v1.clone().dep_tracking_hash());
-    }
-
-    #[test]
-    fn test_externs_tracking_hash_different_construction_order() {
-        let mut v1 = Options::default();
-        let mut v2 = Options::default();
-        let mut v3 = Options::default();
-
-        v1.externs = Externs::new(mk_map(vec![
-            (
-                String::from("a"),
-                mk_set(vec![Some(String::from("b")), Some(String::from("c"))]),
-            ),
-            (
-                String::from("d"),
-                mk_set(vec![Some(String::from("e")), Some(String::from("f"))]),
-            ),
-        ]));
-
-        v2.externs = Externs::new(mk_map(vec![
-            (
-                String::from("d"),
-                mk_set(vec![Some(String::from("e")), Some(String::from("f"))]),
-            ),
-            (
-                String::from("a"),
-                mk_set(vec![Some(String::from("b")), Some(String::from("c"))]),
-            ),
-        ]));
-
-        v3.externs = Externs::new(mk_map(vec![
-            (
-                String::from("a"),
-                mk_set(vec![Some(String::from("b")), Some(String::from("c"))]),
-            ),
-            (
-                String::from("d"),
-                mk_set(vec![Some(String::from("f")), Some(String::from("e"))]),
-            ),
-        ]));
-
-        assert_eq!(v1.dep_tracking_hash(), v2.dep_tracking_hash());
-        assert_eq!(v1.dep_tracking_hash(), v3.dep_tracking_hash());
-        assert_eq!(v2.dep_tracking_hash(), v3.dep_tracking_hash());
-
-        // Check clone
-        assert_eq!(v1.dep_tracking_hash(), v1.clone().dep_tracking_hash());
-        assert_eq!(v2.dep_tracking_hash(), v2.clone().dep_tracking_hash());
-        assert_eq!(v3.dep_tracking_hash(), v3.clone().dep_tracking_hash());
-    }
-
-    #[test]
-    fn test_lints_tracking_hash_different_values() {
-        let mut v1 = Options::default();
-        let mut v2 = Options::default();
-        let mut v3 = Options::default();
-
-        v1.lint_opts = vec![
-            (String::from("a"), lint::Allow),
-            (String::from("b"), lint::Warn),
-            (String::from("c"), lint::Deny),
-            (String::from("d"), lint::Forbid),
-        ];
-
-        v2.lint_opts = vec![
-            (String::from("a"), lint::Allow),
-            (String::from("b"), lint::Warn),
-            (String::from("X"), lint::Deny),
-            (String::from("d"), lint::Forbid),
-        ];
-
-        v3.lint_opts = vec![
-            (String::from("a"), lint::Allow),
-            (String::from("b"), lint::Warn),
-            (String::from("c"), lint::Forbid),
-            (String::from("d"), lint::Deny),
-        ];
-
-        assert!(v1.dep_tracking_hash() != v2.dep_tracking_hash());
-        assert!(v1.dep_tracking_hash() != v3.dep_tracking_hash());
-        assert!(v2.dep_tracking_hash() != v3.dep_tracking_hash());
-
-        // Check clone
-        assert_eq!(v1.dep_tracking_hash(), v1.clone().dep_tracking_hash());
-        assert_eq!(v2.dep_tracking_hash(), v2.clone().dep_tracking_hash());
-        assert_eq!(v3.dep_tracking_hash(), v3.clone().dep_tracking_hash());
-    }
-
-    #[test]
-    fn test_lints_tracking_hash_different_construction_order() {
-        let mut v1 = Options::default();
-        let mut v2 = Options::default();
-
-        v1.lint_opts = vec![
-            (String::from("a"), lint::Allow),
-            (String::from("b"), lint::Warn),
-            (String::from("c"), lint::Deny),
-            (String::from("d"), lint::Forbid),
-        ];
-
-        v2.lint_opts = vec![
-            (String::from("a"), lint::Allow),
-            (String::from("c"), lint::Deny),
-            (String::from("b"), lint::Warn),
-            (String::from("d"), lint::Forbid),
-        ];
-
-        assert_eq!(v1.dep_tracking_hash(), v2.dep_tracking_hash());
-
-        // Check clone
-        assert_eq!(v1.dep_tracking_hash(), v1.clone().dep_tracking_hash());
-        assert_eq!(v2.dep_tracking_hash(), v2.clone().dep_tracking_hash());
-    }
-
-    #[test]
-    fn test_search_paths_tracking_hash_different_order() {
-        let mut v1 = Options::default();
-        let mut v2 = Options::default();
-        let mut v3 = Options::default();
-        let mut v4 = Options::default();
-
-        // Reference
-        v1.search_paths
-            .push(SearchPath::from_cli_opt("native=abc", super::ErrorOutputType::Json(false)));
-        v1.search_paths
-            .push(SearchPath::from_cli_opt("crate=def", super::ErrorOutputType::Json(false)));
-        v1.search_paths
-            .push(SearchPath::from_cli_opt("dependency=ghi", super::ErrorOutputType::Json(false)));
-        v1.search_paths
-            .push(SearchPath::from_cli_opt("framework=jkl", super::ErrorOutputType::Json(false)));
-        v1.search_paths
-            .push(SearchPath::from_cli_opt("all=mno", super::ErrorOutputType::Json(false)));
-
-        v2.search_paths
-            .push(SearchPath::from_cli_opt("native=abc", super::ErrorOutputType::Json(false)));
-        v2.search_paths
-            .push(SearchPath::from_cli_opt("dependency=ghi", super::ErrorOutputType::Json(false)));
-        v2.search_paths
-            .push(SearchPath::from_cli_opt("crate=def", super::ErrorOutputType::Json(false)));
-        v2.search_paths
-            .push(SearchPath::from_cli_opt("framework=jkl", super::ErrorOutputType::Json(false)));
-        v2.search_paths
-            .push(SearchPath::from_cli_opt("all=mno", super::ErrorOutputType::Json(false)));
-
-        v3.search_paths
-            .push(SearchPath::from_cli_opt("crate=def", super::ErrorOutputType::Json(false)));
-        v3.search_paths
-            .push(SearchPath::from_cli_opt("framework=jkl", super::ErrorOutputType::Json(false)));
-        v3.search_paths
-            .push(SearchPath::from_cli_opt("native=abc", super::ErrorOutputType::Json(false)));
-        v3.search_paths
-            .push(SearchPath::from_cli_opt("dependency=ghi", super::ErrorOutputType::Json(false)));
-        v3.search_paths
-            .push(SearchPath::from_cli_opt("all=mno", super::ErrorOutputType::Json(false)));
-
-        v4.search_paths
-            .push(SearchPath::from_cli_opt("all=mno", super::ErrorOutputType::Json(false)));
-        v4.search_paths
-            .push(SearchPath::from_cli_opt("native=abc", super::ErrorOutputType::Json(false)));
-        v4.search_paths
-            .push(SearchPath::from_cli_opt("crate=def", super::ErrorOutputType::Json(false)));
-        v4.search_paths
-            .push(SearchPath::from_cli_opt("dependency=ghi", super::ErrorOutputType::Json(false)));
-        v4.search_paths
-            .push(SearchPath::from_cli_opt("framework=jkl", super::ErrorOutputType::Json(false)));
-
-        assert!(v1.dep_tracking_hash() == v2.dep_tracking_hash());
-        assert!(v1.dep_tracking_hash() == v3.dep_tracking_hash());
-        assert!(v1.dep_tracking_hash() == v4.dep_tracking_hash());
-
-        // Check clone
-        assert_eq!(v1.dep_tracking_hash(), v1.clone().dep_tracking_hash());
-        assert_eq!(v2.dep_tracking_hash(), v2.clone().dep_tracking_hash());
-        assert_eq!(v3.dep_tracking_hash(), v3.clone().dep_tracking_hash());
-        assert_eq!(v4.dep_tracking_hash(), v4.clone().dep_tracking_hash());
-    }
-
-    #[test]
-    fn test_native_libs_tracking_hash_different_values() {
-        let mut v1 = Options::default();
-        let mut v2 = Options::default();
-        let mut v3 = Options::default();
-        let mut v4 = Options::default();
-
-        // Reference
-        v1.libs = vec![
-            (String::from("a"), None, Some(cstore::NativeStatic)),
-            (String::from("b"), None, Some(cstore::NativeFramework)),
-            (String::from("c"), None, Some(cstore::NativeUnknown)),
-        ];
-
-        // Change label
-        v2.libs = vec![
-            (String::from("a"), None, Some(cstore::NativeStatic)),
-            (String::from("X"), None, Some(cstore::NativeFramework)),
-            (String::from("c"), None, Some(cstore::NativeUnknown)),
-        ];
-
-        // Change kind
-        v3.libs = vec![
-            (String::from("a"), None, Some(cstore::NativeStatic)),
-            (String::from("b"), None, Some(cstore::NativeStatic)),
-            (String::from("c"), None, Some(cstore::NativeUnknown)),
-        ];
-
-        // Change new-name
-        v4.libs = vec![
-            (String::from("a"), None, Some(cstore::NativeStatic)),
-            (
-                String::from("b"),
-                Some(String::from("X")),
-                Some(cstore::NativeFramework),
-            ),
-            (String::from("c"), None, Some(cstore::NativeUnknown)),
-        ];
-
-        assert!(v1.dep_tracking_hash() != v2.dep_tracking_hash());
-        assert!(v1.dep_tracking_hash() != v3.dep_tracking_hash());
-        assert!(v1.dep_tracking_hash() != v4.dep_tracking_hash());
-
-        // Check clone
-        assert_eq!(v1.dep_tracking_hash(), v1.clone().dep_tracking_hash());
-        assert_eq!(v2.dep_tracking_hash(), v2.clone().dep_tracking_hash());
-        assert_eq!(v3.dep_tracking_hash(), v3.clone().dep_tracking_hash());
-        assert_eq!(v4.dep_tracking_hash(), v4.clone().dep_tracking_hash());
-    }
-
-    #[test]
-    fn test_native_libs_tracking_hash_different_order() {
-        let mut v1 = Options::default();
-        let mut v2 = Options::default();
-        let mut v3 = Options::default();
-
-        // Reference
-        v1.libs = vec![
-            (String::from("a"), None, Some(cstore::NativeStatic)),
-            (String::from("b"), None, Some(cstore::NativeFramework)),
-            (String::from("c"), None, Some(cstore::NativeUnknown)),
-        ];
-
-        v2.libs = vec![
-            (String::from("b"), None, Some(cstore::NativeFramework)),
-            (String::from("a"), None, Some(cstore::NativeStatic)),
-            (String::from("c"), None, Some(cstore::NativeUnknown)),
-        ];
-
-        v3.libs = vec![
-            (String::from("c"), None, Some(cstore::NativeUnknown)),
-            (String::from("a"), None, Some(cstore::NativeStatic)),
-            (String::from("b"), None, Some(cstore::NativeFramework)),
-        ];
-
-        assert!(v1.dep_tracking_hash() == v2.dep_tracking_hash());
-        assert!(v1.dep_tracking_hash() == v3.dep_tracking_hash());
-        assert!(v2.dep_tracking_hash() == v3.dep_tracking_hash());
-
-        // Check clone
-        assert_eq!(v1.dep_tracking_hash(), v1.clone().dep_tracking_hash());
-        assert_eq!(v2.dep_tracking_hash(), v2.clone().dep_tracking_hash());
-        assert_eq!(v3.dep_tracking_hash(), v3.clone().dep_tracking_hash());
-    }
-
-    #[test]
-    fn test_codegen_options_tracking_hash() {
-        let reference = Options::default();
-        let mut opts = Options::default();
-
-        // Make sure the changing an [UNTRACKED] option leaves the hash unchanged
-        opts.cg.ar = Some(String::from("abc"));
-        assert_eq!(reference.dep_tracking_hash(), opts.dep_tracking_hash());
-
-        opts.cg.linker = Some(PathBuf::from("linker"));
-        assert_eq!(reference.dep_tracking_hash(), opts.dep_tracking_hash());
-
-        opts.cg.link_args = Some(vec![String::from("abc"), String::from("def")]);
-        assert_eq!(reference.dep_tracking_hash(), opts.dep_tracking_hash());
-
-        opts.cg.link_dead_code = true;
-        assert_eq!(reference.dep_tracking_hash(), opts.dep_tracking_hash());
-
-        opts.cg.rpath = true;
-        assert_eq!(reference.dep_tracking_hash(), opts.dep_tracking_hash());
-
-        opts.cg.extra_filename = String::from("extra-filename");
-        assert_eq!(reference.dep_tracking_hash(), opts.dep_tracking_hash());
-
-        opts.cg.codegen_units = Some(42);
-        assert_eq!(reference.dep_tracking_hash(), opts.dep_tracking_hash());
-
-        opts.cg.remark = super::Passes::Some(vec![String::from("pass1"), String::from("pass2")]);
-        assert_eq!(reference.dep_tracking_hash(), opts.dep_tracking_hash());
-
-        opts.cg.save_temps = true;
-        assert_eq!(reference.dep_tracking_hash(), opts.dep_tracking_hash());
-
-        opts.cg.incremental = Some(String::from("abc"));
-        assert_eq!(reference.dep_tracking_hash(), opts.dep_tracking_hash());
-
-        // Make sure changing a [TRACKED] option changes the hash
-        opts = reference.clone();
-        opts.cg.lto = LtoCli::Fat;
-        assert!(reference.dep_tracking_hash() != opts.dep_tracking_hash());
-
-        opts = reference.clone();
-        opts.cg.target_cpu = Some(String::from("abc"));
-        assert!(reference.dep_tracking_hash() != opts.dep_tracking_hash());
-
-        opts = reference.clone();
-        opts.cg.target_feature = String::from("all the features, all of them");
-        assert!(reference.dep_tracking_hash() != opts.dep_tracking_hash());
-
-        opts = reference.clone();
-        opts.cg.passes = vec![String::from("1"), String::from("2")];
-        assert!(reference.dep_tracking_hash() != opts.dep_tracking_hash());
-
-        opts = reference.clone();
-        opts.cg.llvm_args = vec![String::from("1"), String::from("2")];
-        assert!(reference.dep_tracking_hash() != opts.dep_tracking_hash());
-
-        opts = reference.clone();
-        opts.cg.overflow_checks = Some(true);
-        assert!(reference.dep_tracking_hash() != opts.dep_tracking_hash());
-
-        opts = reference.clone();
-        opts.cg.no_prepopulate_passes = true;
-        assert!(reference.dep_tracking_hash() != opts.dep_tracking_hash());
-
-        opts = reference.clone();
-        opts.cg.no_vectorize_loops = true;
-        assert!(reference.dep_tracking_hash() != opts.dep_tracking_hash());
-
-        opts = reference.clone();
-        opts.cg.no_vectorize_slp = true;
-        assert!(reference.dep_tracking_hash() != opts.dep_tracking_hash());
-
-        opts = reference.clone();
-        opts.cg.soft_float = true;
-        assert!(reference.dep_tracking_hash() != opts.dep_tracking_hash());
-
-        opts = reference.clone();
-        opts.cg.prefer_dynamic = true;
-        assert!(reference.dep_tracking_hash() != opts.dep_tracking_hash());
-
-        opts = reference.clone();
-        opts.cg.no_integrated_as = true;
-        assert!(reference.dep_tracking_hash() != opts.dep_tracking_hash());
-
-        opts = reference.clone();
-        opts.cg.no_redzone = Some(true);
-        assert!(reference.dep_tracking_hash() != opts.dep_tracking_hash());
-
-        opts = reference.clone();
-        opts.cg.relocation_model = Some(String::from("relocation model"));
-        assert!(reference.dep_tracking_hash() != opts.dep_tracking_hash());
-
-        opts = reference.clone();
-        opts.cg.code_model = Some(String::from("code model"));
-        assert!(reference.dep_tracking_hash() != opts.dep_tracking_hash());
-
-        opts = reference.clone();
-        opts.debugging_opts.tls_model = Some(String::from("tls model"));
-        assert!(reference.dep_tracking_hash() != opts.dep_tracking_hash());
-
-        opts = reference.clone();
-        opts.debugging_opts.pgo_gen = Some(String::from("abc"));
-        assert_ne!(reference.dep_tracking_hash(), opts.dep_tracking_hash());
-
-        opts = reference.clone();
-        opts.debugging_opts.pgo_use = String::from("abc");
-        assert_ne!(reference.dep_tracking_hash(), opts.dep_tracking_hash());
-
-        opts = reference.clone();
-        opts.cg.metadata = vec![String::from("A"), String::from("B")];
-        assert!(reference.dep_tracking_hash() != opts.dep_tracking_hash());
-
-        opts = reference.clone();
-        opts.cg.debuginfo = Some(0xdeadbeef);
-        assert!(reference.dep_tracking_hash() != opts.dep_tracking_hash());
-
-        opts = reference.clone();
-        opts.cg.debuginfo = Some(0xba5eba11);
-        assert!(reference.dep_tracking_hash() != opts.dep_tracking_hash());
-
-        opts = reference.clone();
-        opts.cg.force_frame_pointers = Some(false);
-        assert!(reference.dep_tracking_hash() != opts.dep_tracking_hash());
-
-        opts = reference.clone();
-        opts.cg.debug_assertions = Some(true);
-        assert!(reference.dep_tracking_hash() != opts.dep_tracking_hash());
-
-        opts = reference.clone();
-        opts.cg.inline_threshold = Some(0xf007ba11);
-        assert!(reference.dep_tracking_hash() != opts.dep_tracking_hash());
-
-        opts = reference.clone();
-        opts.cg.panic = Some(PanicStrategy::Abort);
-        assert!(reference.dep_tracking_hash() != opts.dep_tracking_hash());
-    }
-
-    #[test]
-    fn test_debugging_options_tracking_hash() {
-        let reference = Options::default();
-        let mut opts = Options::default();
-
-        // Make sure the changing an [UNTRACKED] option leaves the hash unchanged
-        opts.debugging_opts.verbose = true;
-        assert_eq!(reference.dep_tracking_hash(), opts.dep_tracking_hash());
-        opts.debugging_opts.time_passes = true;
-        assert_eq!(reference.dep_tracking_hash(), opts.dep_tracking_hash());
-        opts.debugging_opts.count_llvm_insns = true;
-        assert_eq!(reference.dep_tracking_hash(), opts.dep_tracking_hash());
-        opts.debugging_opts.time_llvm_passes = true;
-        assert_eq!(reference.dep_tracking_hash(), opts.dep_tracking_hash());
-        opts.debugging_opts.input_stats = true;
-        assert_eq!(reference.dep_tracking_hash(), opts.dep_tracking_hash());
-        opts.debugging_opts.codegen_stats = true;
-        assert_eq!(reference.dep_tracking_hash(), opts.dep_tracking_hash());
-        opts.debugging_opts.borrowck_stats = true;
-        assert_eq!(reference.dep_tracking_hash(), opts.dep_tracking_hash());
-        opts.debugging_opts.meta_stats = true;
-        assert_eq!(reference.dep_tracking_hash(), opts.dep_tracking_hash());
-        opts.debugging_opts.print_link_args = true;
-        assert_eq!(reference.dep_tracking_hash(), opts.dep_tracking_hash());
-        opts.debugging_opts.print_llvm_passes = true;
-        assert_eq!(reference.dep_tracking_hash(), opts.dep_tracking_hash());
-        opts.debugging_opts.ast_json = true;
-        assert_eq!(reference.dep_tracking_hash(), opts.dep_tracking_hash());
-        opts.debugging_opts.ast_json_noexpand = true;
-        assert_eq!(reference.dep_tracking_hash(), opts.dep_tracking_hash());
-        opts.debugging_opts.ls = true;
-        assert_eq!(reference.dep_tracking_hash(), opts.dep_tracking_hash());
-        opts.debugging_opts.save_analysis = true;
-        assert_eq!(reference.dep_tracking_hash(), opts.dep_tracking_hash());
-        opts.debugging_opts.flowgraph_print_loans = true;
-        assert_eq!(reference.dep_tracking_hash(), opts.dep_tracking_hash());
-        opts.debugging_opts.flowgraph_print_moves = true;
-        assert_eq!(reference.dep_tracking_hash(), opts.dep_tracking_hash());
-        opts.debugging_opts.flowgraph_print_assigns = true;
-        assert_eq!(reference.dep_tracking_hash(), opts.dep_tracking_hash());
-        opts.debugging_opts.flowgraph_print_all = true;
-        assert_eq!(reference.dep_tracking_hash(), opts.dep_tracking_hash());
-        opts.debugging_opts.print_region_graph = true;
-        assert_eq!(reference.dep_tracking_hash(), opts.dep_tracking_hash());
-        opts.debugging_opts.parse_only = true;
-        assert_eq!(reference.dep_tracking_hash(), opts.dep_tracking_hash());
-        opts.debugging_opts.incremental = Some(String::from("abc"));
-        assert_eq!(reference.dep_tracking_hash(), opts.dep_tracking_hash());
-        opts.debugging_opts.dump_dep_graph = true;
-        assert_eq!(reference.dep_tracking_hash(), opts.dep_tracking_hash());
-        opts.debugging_opts.query_dep_graph = true;
-        assert_eq!(reference.dep_tracking_hash(), opts.dep_tracking_hash());
-        opts.debugging_opts.no_analysis = true;
-        assert_eq!(reference.dep_tracking_hash(), opts.dep_tracking_hash());
-        opts.debugging_opts.unstable_options = true;
-        assert_eq!(reference.dep_tracking_hash(), opts.dep_tracking_hash());
-        opts.debugging_opts.trace_macros = true;
-        assert_eq!(reference.dep_tracking_hash(), opts.dep_tracking_hash());
-        opts.debugging_opts.keep_hygiene_data = true;
-        assert_eq!(reference.dep_tracking_hash(), opts.dep_tracking_hash());
-        opts.debugging_opts.keep_ast = true;
-        assert_eq!(reference.dep_tracking_hash(), opts.dep_tracking_hash());
-        opts.debugging_opts.print_mono_items = Some(String::from("abc"));
-        assert_eq!(reference.dep_tracking_hash(), opts.dep_tracking_hash());
-        opts.debugging_opts.dump_mir = Some(String::from("abc"));
-        assert_eq!(reference.dep_tracking_hash(), opts.dep_tracking_hash());
-        opts.debugging_opts.dump_mir_dir = String::from("abc");
-        assert_eq!(reference.dep_tracking_hash(), opts.dep_tracking_hash());
-        opts.debugging_opts.dump_mir_graphviz = true;
-        assert_eq!(reference.dep_tracking_hash(), opts.dep_tracking_hash());
-
-        // Make sure changing a [TRACKED] option changes the hash
-        opts = reference.clone();
-        opts.debugging_opts.asm_comments = true;
-        assert!(reference.dep_tracking_hash() != opts.dep_tracking_hash());
-
-        opts = reference.clone();
-        opts.debugging_opts.verify_llvm_ir = true;
-        assert!(reference.dep_tracking_hash() != opts.dep_tracking_hash());
-
-        opts = reference.clone();
-        opts.debugging_opts.no_landing_pads = true;
-        assert!(reference.dep_tracking_hash() != opts.dep_tracking_hash());
-
-        opts = reference.clone();
-        opts.debugging_opts.fewer_names = true;
-        assert!(reference.dep_tracking_hash() != opts.dep_tracking_hash());
-
-        opts = reference.clone();
-        opts.debugging_opts.no_codegen = true;
-        assert!(reference.dep_tracking_hash() != opts.dep_tracking_hash());
-
-        opts = reference.clone();
-        opts.debugging_opts.treat_err_as_bug = true;
-        assert!(reference.dep_tracking_hash() != opts.dep_tracking_hash());
-
-        opts = reference.clone();
-        opts.debugging_opts.report_delayed_bugs = true;
-        assert!(reference.dep_tracking_hash() != opts.dep_tracking_hash());
-
-        opts = reference.clone();
-        opts.debugging_opts.continue_parse_after_error = true;
-        assert!(reference.dep_tracking_hash() != opts.dep_tracking_hash());
-
-        opts = reference.clone();
-        opts.debugging_opts.extra_plugins = vec![String::from("plugin1"), String::from("plugin2")];
-        assert!(reference.dep_tracking_hash() != opts.dep_tracking_hash());
-
-        opts = reference.clone();
-        opts.debugging_opts.force_overflow_checks = Some(true);
-        assert!(reference.dep_tracking_hash() != opts.dep_tracking_hash());
-
-        opts = reference.clone();
-        opts.debugging_opts.show_span = Some(String::from("abc"));
-        assert!(reference.dep_tracking_hash() != opts.dep_tracking_hash());
-
-        opts = reference.clone();
-        opts.debugging_opts.mir_opt_level = 3;
-        assert!(reference.dep_tracking_hash() != opts.dep_tracking_hash());
-
-        opts = reference.clone();
-        opts.debugging_opts.relro_level = Some(RelroLevel::Full);
-        assert!(reference.dep_tracking_hash() != opts.dep_tracking_hash());
-
-        opts = reference.clone();
-        opts.debugging_opts.cross_lang_lto = CrossLangLto::LinkerPluginAuto;
-        assert!(reference.dep_tracking_hash() != opts.dep_tracking_hash());
-
-        opts = reference.clone();
-        opts.debugging_opts.merge_functions = Some(MergeFunctions::Disabled);
-        assert!(reference.dep_tracking_hash() != opts.dep_tracking_hash());
-    }
-
-    #[test]
-    fn test_edition_parsing() {
-        // test default edition
-        let options = Options::default();
-        assert!(options.edition == DEFAULT_EDITION);
-
-        let matches = optgroups()
-            .parse(&["--edition=2018".to_string()])
-            .unwrap();
-        let (sessopts, _) = build_session_options_and_crate_config(&matches);
-        assert!(sessopts.edition == Edition::Edition2018)
-    }
-}
+mod tests;

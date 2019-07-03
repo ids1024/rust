@@ -1,15 +1,14 @@
-error[E0091]: type parameter `T` is unused
-  --> $DIR/unused_generic_param.rs:6:35
+error: at least one trait must be specified
+  --> $DIR/unused_generic_param.rs:6:39
    |
-LL | existential type PartiallyDefined<T>: 'static; //~ `T` is unused
-   |                                   ^ unused type parameter
+LL | existential type PartiallyDefined<T>: 'static;
+   |                                       ^^^^^^^
 
-error[E0091]: type parameter `T` is unused
-  --> $DIR/unused_generic_param.rs:12:36
+error: at least one trait must be specified
+  --> $DIR/unused_generic_param.rs:13:40
    |
-LL | existential type PartiallyDefined2<T>: 'static; //~ `T` is unused
-   |                                    ^ unused type parameter
+LL | existential type PartiallyDefined2<T>: 'static;
+   |                                        ^^^^^^^
 
 error: aborting due to 2 previous errors
 
-For more information about this error, try `rustc --explain E0091`.

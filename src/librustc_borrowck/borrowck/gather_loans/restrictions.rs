@@ -1,13 +1,14 @@
 //! Computes the restrictions that result from a borrow.
 
-use borrowck::*;
+use crate::borrowck::*;
 use rustc::middle::expr_use_visitor as euv;
 use rustc::middle::mem_categorization as mc;
 use rustc::middle::mem_categorization::Categorization;
 use rustc::ty;
 use syntax_pos::Span;
+use log::debug;
 
-use borrowck::ToInteriorKind;
+use crate::borrowck::ToInteriorKind;
 
 use std::rc::Rc;
 
@@ -36,7 +37,7 @@ pub fn compute_restrictions<'a, 'tcx>(bccx: &BorrowckCtxt<'a, 'tcx>,
 ///////////////////////////////////////////////////////////////////////////
 // Private
 
-struct RestrictionsContext<'a, 'tcx: 'a> {
+struct RestrictionsContext<'a, 'tcx> {
     bccx: &'a BorrowckCtxt<'a, 'tcx>,
     span: Span,
     loan_region: ty::Region<'tcx>,

@@ -27,7 +27,7 @@
 //!
 //! The reason for this is that any of B's types could be composed of C's types,
 //! any function in B could return a type from C, etc. To be able to guarantee
-//! that we can always typecheck/translate any function, we have to have
+//! that we can always type-check/translate any function, we have to have
 //! complete knowledge of the whole ecosystem, not just our immediate
 //! dependencies.
 //!
@@ -212,9 +212,9 @@
 //! no means all of the necessary details. Take a look at the rest of
 //! metadata::locator or metadata::creader for all the juicy details!
 
-use cstore::{MetadataRef, MetadataBlob};
-use creader::Library;
-use schema::{METADATA_HEADER, rustc_version};
+use crate::cstore::{MetadataRef, MetadataBlob};
+use crate::creader::Library;
+use crate::schema::{METADATA_HEADER, rustc_version};
 
 use rustc_data_structures::fx::FxHashSet;
 use rustc_data_structures::svh::Svh;
@@ -225,7 +225,8 @@ use rustc::session::search_paths::PathKind;
 use rustc::util::nodemap::FxHashMap;
 
 use errors::DiagnosticBuilder;
-use syntax::symbol::Symbol;
+use syntax::symbol::{Symbol, sym};
+use syntax::struct_span_err;
 use syntax_pos::Span;
 use rustc_target::spec::{Target, TargetTriple};
 
@@ -241,11 +242,15 @@ use flate2::read::DeflateDecoder;
 
 use rustc_data_structures::owning_ref::OwningRef;
 
+use log::{debug, info, warn};
+
+#[derive(Clone)]
 pub struct CrateMismatch {
     path: PathBuf,
     got: String,
 }
 
+#[derive(Clone)]
 pub struct Context<'a> {
     pub sess: &'a Session,
     pub span: Span,
@@ -255,7 +260,7 @@ pub struct Context<'a> {
     pub extra_filename: Option<&'a str>,
     // points to either self.sess.target.target or self.sess.host, must match triple
     pub target: &'a Target,
-    pub triple: &'a TargetTriple,
+    pub triple: TargetTriple,
     pub filesearch: FileSearch<'a>,
     pub root: &'a Option<CratePaths>,
     pub rejected_via_hash: Vec<CrateMismatch>,
@@ -283,7 +288,7 @@ enum CrateFlavor {
 }
 
 impl fmt::Display for CrateFlavor {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match *self {
             CrateFlavor::Rlib => "rlib",
             CrateFlavor::Rmeta => "rmeta",
@@ -299,6 +304,14 @@ impl CratePaths {
 }
 
 impl<'a> Context<'a> {
+    pub fn reset(&mut self) {
+        self.rejected_via_hash.clear();
+        self.rejected_via_triple.clear();
+        self.rejected_via_kind.clear();
+        self.rejected_via_version.clear();
+        self.rejected_via_filename.clear();
+    }
+
     pub fn maybe_load_library_crate(&mut self) -> Option<Library> {
         let mut seen_paths = FxHashSet::default();
         match self.extra_filename {
@@ -308,7 +321,7 @@ impl<'a> Context<'a> {
         }
     }
 
-    pub fn report_errs(&mut self) -> ! {
+    pub fn report_errs(self) -> ! {
         let add = match self.root {
             &None => String::new(),
             &Some(ref r) => format!(" which `{}` depends on", r.ident),
@@ -395,8 +408,8 @@ impl<'a> Context<'a> {
                                            self.ident,
                                            add);
 
-            if (self.ident == "std" || self.ident == "core")
-                && self.triple != &TargetTriple::from_triple(config::host_triple()) {
+            if (self.ident == sym::std || self.ident == sym::core)
+                && self.triple != TargetTriple::from_triple(config::host_triple()) {
                 err.note(&format!("the `{}` target may not be installed", self.triple));
             }
             err.span_label(self.span, "can't find crate");
@@ -429,11 +442,11 @@ impl<'a> Context<'a> {
         // must be loaded via -L plus some filtering.
         if self.hash.is_none() {
             self.should_match_name = false;
-            if let Some(s) = self.sess.opts.externs.get(&self.crate_name.as_str()) {
+            if let Some(entry) = self.sess.opts.externs.get(&self.crate_name.as_str()) {
                 // Only use `--extern crate_name=path` here, not `--extern crate_name`.
-                if s.iter().any(|l| l.is_some()) {
+                if entry.locations.iter().any(|l| l.is_some()) {
                     return self.find_commandline_library(
-                        s.iter().filter_map(|l| l.as_ref()),
+                        entry.locations.iter().filter_map(|l| l.as_ref()),
                     );
                 }
             }
@@ -600,7 +613,7 @@ impl<'a> Context<'a> {
             }
         }
 
-        let mut err: Option<DiagnosticBuilder> = None;
+        let mut err: Option<DiagnosticBuilder<'_>> = None;
         for (lib, kind) in m {
             info!("{} reading metadata from: {}", flavor, lib.display());
             let (hash, metadata) =
@@ -715,7 +728,7 @@ impl<'a> Context<'a> {
             }
         }
 
-        if &root.triple != self.triple {
+        if root.triple != self.triple {
             info!("Rejecting via crate triple: expected {} got {}",
                   self.triple,
                   root.triple);
@@ -888,8 +901,7 @@ fn get_metadata_section_imp(target: &Target,
             let mut inflated = Vec::new();
             match DeflateDecoder::new(compressed_bytes).read_to_end(&mut inflated) {
                 Ok(_) => {
-                    let buf = unsafe { OwningRef::new_assert_stable_address(inflated) };
-                    rustc_erase_owner!(buf.map_owner_box())
+                    rustc_erase_owner!(OwningRef::new(inflated).map_owner_box())
                 }
                 Err(_) => {
                     return Err(format!("failed to decompress metadata: {}", filename.display()));
@@ -915,7 +927,7 @@ fn get_metadata_section_imp(target: &Target,
     }
 }
 
-// A diagnostic function for dumping crate metadata to an output stream
+/// A diagnostic function for dumping crate metadata to an output stream.
 pub fn list_file_metadata(target: &Target,
                           path: &Path,
                           loader: &dyn MetadataLoader,

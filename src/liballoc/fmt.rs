@@ -27,7 +27,7 @@
 //! will then parse the format string and determine if the list of arguments
 //! provided is suitable to pass to this format string.
 //!
-//! To convert a single value to a string, use the [`to_string`] method.  This
+//! To convert a single value to a string, use the [`to_string`] method. This
 //! will use the [`Display`] formatting trait.
 //!
 //! ## Positional parameters
@@ -102,7 +102,7 @@
 //! When requesting that an argument be formatted with a particular type, you
 //! are actually requesting that an argument ascribes to a particular trait.
 //! This allows multiple actual types to be formatted via `{:x}` (like [`i8`] as
-//! well as [`isize`]).  The current mapping of types to traits is:
+//! well as [`isize`]). The current mapping of types to traits is:
 //!
 //! * *nothing* ⇒ [`Display`]
 //! * `?` ⇒ [`Debug`]
@@ -343,9 +343,10 @@
 //! * `^` - the argument is center-aligned in `width` columns
 //! * `>` - the argument is right-aligned in `width` columns
 //!
-//! Note that alignment may not be implemented by some types. A good way
-//! to ensure padding is applied is to format your input, then use this
-//! resulting string to pad your output.
+//! Note that alignment may not be implemented by some types. In particular, it
+//! is not generally implemented for the `Debug` trait.  A good way to ensure
+//! padding is applied is to format your input, then use this resulting string
+//! to pad your output.
 //!
 //! ## Sign/`#`/`0`
 //!
@@ -427,7 +428,7 @@
 //! 3. An asterisk `.*`:
 //!
 //!    `.*` means that this `{...}` is associated with *two* format inputs rather than one: the
-//!    first input holds the `usize` precision, and the second holds the value to print.  Note that
+//!    first input holds the `usize` precision, and the second holds the value to print. Note that
 //!    in this case, if one uses the format string `{<arg>:<spec>.*}`, then the `<arg>` part refers
 //!    to the *value* to print, and the `precision` must come in the input preceding `<arg>`.
 //!
@@ -527,7 +528,7 @@ pub use core::fmt::{DebugList, DebugMap, DebugSet, DebugStruct, DebugTuple};
 #[stable(feature = "fmt_flags_align", since = "1.28.0")]
 pub use core::fmt::{Alignment};
 
-use string;
+use crate::string;
 
 /// The `format` function takes an [`Arguments`] struct and returns the resulting
 /// formatted string.
@@ -557,7 +558,7 @@ use string;
 /// [`format_args!`]: ../../std/macro.format_args.html
 /// [`format!`]: ../../std/macro.format.html
 #[stable(feature = "rust1", since = "1.0.0")]
-pub fn format(args: Arguments) -> string::String {
+pub fn format(args: Arguments<'_>) -> string::String {
     let capacity = args.estimated_capacity();
     let mut output = string::String::with_capacity(capacity);
     output

@@ -1,7 +1,7 @@
 // Simply gives a rought count of the number of nodes in an AST.
 
-use visit::*;
-use ast::*;
+use crate::visit::*;
+use crate::ast::*;
 use syntax_pos::Span;
 
 pub struct NodeCounter {
@@ -69,7 +69,7 @@ impl<'ast> Visitor<'ast> for NodeCounter {
         self.count += 1;
         walk_generics(self, g)
     }
-    fn visit_fn(&mut self, fk: FnKind, fd: &FnDecl, s: Span, _: NodeId) {
+    fn visit_fn(&mut self, fk: FnKind<'_>, fd: &FnDecl, s: Span, _: NodeId) {
         self.count += 1;
         walk_fn(self, fk, fd, s)
     }
@@ -131,9 +131,9 @@ impl<'ast> Visitor<'ast> for NodeCounter {
         self.count += 1;
         walk_generic_args(self, path_span, generic_args)
     }
-    fn visit_assoc_type_binding(&mut self, type_binding: &TypeBinding) {
+    fn visit_assoc_ty_constraint(&mut self, constraint: &AssocTyConstraint) {
         self.count += 1;
-        walk_assoc_type_binding(self, type_binding)
+        walk_assoc_ty_constraint(self, constraint)
     }
     fn visit_attribute(&mut self, _attr: &Attribute) {
         self.count += 1;

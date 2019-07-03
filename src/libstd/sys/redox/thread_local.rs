@@ -1,14 +1,14 @@
 #![allow(dead_code)] // not used on all platforms
 
-use collections::BTreeMap;
-use ptr;
-use sync::atomic::{AtomicUsize, ATOMIC_USIZE_INIT, Ordering};
+use crate::collections::BTreeMap;
+use crate::ptr;
+use crate::sync::atomic::{AtomicUsize, Ordering};
 
 pub type Key = usize;
 
 type Dtor = unsafe extern fn(*mut u8);
 
-static NEXT_KEY: AtomicUsize = ATOMIC_USIZE_INIT;
+static NEXT_KEY: AtomicUsize = AtomicUsize::new(0);
 
 static mut KEYS: *mut BTreeMap<Key, Option<Dtor>> = ptr::null_mut();
 

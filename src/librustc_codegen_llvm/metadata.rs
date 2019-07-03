@@ -1,18 +1,18 @@
+use crate::llvm;
+use crate::llvm::{False, ObjectFile, mk_section_iter};
+use crate::llvm::archive_ro::ArchiveRO;
 use rustc::middle::cstore::MetadataLoader;
 use rustc_target::spec::Target;
-use llvm;
-use llvm::{False, ObjectFile, mk_section_iter};
-use llvm::archive_ro::ArchiveRO;
 
 use rustc_data_structures::owning_ref::OwningRef;
+use rustc_codegen_ssa::METADATA_FILENAME;
+
 use std::path::Path;
 use std::ptr;
 use std::slice;
 use rustc_fs_util::path_to_c_string;
 
 pub use rustc_data_structures::sync::MetadataRef;
-
-pub const METADATA_FILENAME: &str = "rust.metadata.bin";
 
 pub struct LlvmMetadataLoader;
 

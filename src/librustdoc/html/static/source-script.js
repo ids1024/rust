@@ -39,28 +39,32 @@ function createDirEntry(elem, parent, fullPath, currentFile, hasFoundFile) {
     children.className = "children";
     var folders = document.createElement("div");
     folders.className = "folders";
-    for (var i = 0; i < elem.dirs.length; ++i) {
-        if (createDirEntry(elem.dirs[i], folders, fullPath, currentFile,
-                           hasFoundFile) === true) {
-            addClass(name, "expand");
-            hasFoundFile = true;
+    if (elem.dirs) {
+        for (var i = 0; i < elem.dirs.length; ++i) {
+            if (createDirEntry(elem.dirs[i], folders, fullPath, currentFile,
+                               hasFoundFile) === true) {
+                addClass(name, "expand");
+                hasFoundFile = true;
+            }
         }
     }
     children.appendChild(folders);
 
     var files = document.createElement("div");
     files.className = "files";
-    for (i = 0; i < elem.files.length; ++i) {
-        var file = document.createElement("a");
-        file.innerText = elem.files[i];
-        file.href = window.rootPath + "src/" + fullPath + elem.files[i] + ".html";
-        if (hasFoundFile === false &&
-                currentFile === fullPath + elem.files[i]) {
-            file.className = "selected";
-            addClass(name, "expand");
-            hasFoundFile = true;
+    if (elem.files) {
+        for (i = 0; i < elem.files.length; ++i) {
+            var file = document.createElement("a");
+            file.innerText = elem.files[i];
+            file.href = window.rootPath + "src/" + fullPath + elem.files[i] + ".html";
+            if (hasFoundFile === false &&
+                    currentFile === fullPath + elem.files[i]) {
+                file.className = "selected";
+                addClass(name, "expand");
+                hasFoundFile = true;
+            }
+            files.appendChild(file);
         }
-        files.appendChild(file);
     }
     search.fullPath = fullPath;
     children.appendChild(files);
@@ -94,7 +98,7 @@ function createSidebarToggle() {
     inner1.style.position = "relative";
 
     var inner2 = document.createElement("div");
-    inner2.style.marginTop = "-2px";
+    inner2.style.paddingTop = "3px";
     if (getCurrentValue("rustdoc-source-sidebar-show") === "true") {
         inner2.innerText = "<";
     } else {

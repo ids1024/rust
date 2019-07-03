@@ -62,38 +62,36 @@ macro_rules! __impl_stable_hash_field {
 #[macro_export]
 macro_rules! impl_stable_hash_for {
     // Enums
-    // FIXME(mark-i-m): Some of these should be `?` rather than `*`. See the git blame and change
-    // them back when `?` is supported again.
     (enum $enum_name:path {
         $( $variant:ident
            // this incorrectly allows specifying both tuple-like and struct-like fields, as in `Variant(a,b){c,d}`,
            // when it should be only one or the other
-           $( ( $($field:ident $(-> $delegate:tt)*),* ) )*
-           $( { $($named_field:ident $(-> $named_delegate:tt)*),* } )*
-        ),* $(,)*
+           $( ( $($field:ident $(-> $delegate:tt)?),* ) )?
+           $( { $($named_field:ident $(-> $named_delegate:tt)?),* } )?
+        ),* $(,)?
     }) => {
         impl_stable_hash_for!(
             impl<> for enum $enum_name [ $enum_name ] { $( $variant
-                $( ( $($field $(-> $delegate)*),* ) )*
-                $( { $($named_field $(-> $named_delegate)*),* } )*
+                $( ( $($field $(-> $delegate)?),* ) )?
+                $( { $($named_field $(-> $named_delegate)?),* } )?
             ),* }
         );
     };
     // We want to use the enum name both in the `impl ... for $enum_name` as well as for
     // importing all the variants. Unfortunately it seems we have to take the name
     // twice for this purpose
-    (impl<$($lt:lifetime $(: $lt_bound:lifetime)* ),* $(,)* $($T:ident),* $(,)*>
+    (impl<$($T:ident),* $(,)?>
         for enum $enum_name:path
         [ $enum_path:path ]
     {
         $( $variant:ident
            // this incorrectly allows specifying both tuple-like and struct-like fields, as in `Variant(a,b){c,d}`,
            // when it should be only one or the other
-           $( ( $($field:ident $(-> $delegate:tt)*),* ) )*
-           $( { $($named_field:ident $(-> $named_delegate:tt)*),* } )*
-        ),* $(,)*
+           $( ( $($field:ident $(-> $delegate:tt)?),* ) )?
+           $( { $($named_field:ident $(-> $named_delegate:tt)?),* } )?
+        ),* $(,)?
     }) => {
-        impl<'a, $($lt $(: $lt_bound)*,)* $($T,)*>
+        impl<$($T,)*>
             ::rustc_data_structures::stable_hasher::HashStable<$crate::ich::StableHashingContext<'a>>
             for $enum_name
             where $($T: ::rustc_data_structures::stable_hasher::HashStable<$crate::ich::StableHashingContext<'a>>),*
@@ -107,9 +105,9 @@ macro_rules! impl_stable_hash_for {
 
                 match *self {
                     $(
-                        $variant $( ( $(ref $field),* ) )* $( { $(ref $named_field),* } )* => {
-                            $($( __impl_stable_hash_field!($field, __ctx, __hasher $(, $delegate)*) );*)*
-                            $($( __impl_stable_hash_field!($named_field, __ctx, __hasher $(, $named_delegate)*) );*)*
+                        $variant $( ( $(ref $field),* ) )? $( { $(ref $named_field),* } )? => {
+                            $($( __impl_stable_hash_field!($field, __ctx, __hasher $(, $delegate)?) );*)?
+                            $($( __impl_stable_hash_field!($named_field, __ctx, __hasher $(, $named_delegate)?) );*)?
                         }
                     )*
                 }
@@ -117,16 +115,15 @@ macro_rules! impl_stable_hash_for {
         }
     };
     // Structs
-    // FIXME(mark-i-m): same here.
-    (struct $struct_name:path { $($field:ident $(-> $delegate:tt)*),*  $(,)* }) => {
+    (struct $struct_name:path { $($field:ident $(-> $delegate:tt)?),* $(,)? }) => {
         impl_stable_hash_for!(
-            impl<'tcx> for struct $struct_name { $($field $(-> $delegate)*),* }
+            impl<> for struct $struct_name { $($field $(-> $delegate)?),* }
         );
     };
-    (impl<$($lt:lifetime $(: $lt_bound:lifetime)* ),* $(,)* $($T:ident),* $(,)*> for struct $struct_name:path {
-        $($field:ident $(-> $delegate:tt)*),* $(,)*
+    (impl<$($T:ident),* $(,)?> for struct $struct_name:path {
+        $($field:ident $(-> $delegate:tt)?),* $(,)?
     }) => {
-        impl<'a, $($lt $(: $lt_bound)*,)* $($T,)*>
+        impl<$($T,)*>
             ::rustc_data_structures::stable_hasher::HashStable<$crate::ich::StableHashingContext<'a>> for $struct_name
             where $($T: ::rustc_data_structures::stable_hasher::HashStable<$crate::ich::StableHashingContext<'a>>),*
         {
@@ -138,21 +135,20 @@ macro_rules! impl_stable_hash_for {
                     $(ref $field),*
                 } = *self;
 
-                $( __impl_stable_hash_field!($field, __ctx, __hasher $(, $delegate)*) );*
+                $( __impl_stable_hash_field!($field, __ctx, __hasher $(, $delegate)?) );*
             }
         }
     };
     // Tuple structs
-    // We cannot use normale parentheses here, the parser won't allow it
-    // FIXME(mark-i-m): same here.
-    (tuple_struct $struct_name:path { $($field:ident $(-> $delegate:tt)*),*  $(,)* }) => {
+    // We cannot use normal parentheses here, the parser won't allow it
+    (tuple_struct $struct_name:path { $($field:ident $(-> $delegate:tt)?),*  $(,)? }) => {
         impl_stable_hash_for!(
-            impl<'tcx> for tuple_struct $struct_name { $($field $(-> $delegate)*),* }
+            impl<> for tuple_struct $struct_name { $($field $(-> $delegate)?),* }
         );
     };
-    (impl<$($lt:lifetime $(: $lt_bound:lifetime)* ),* $(,)* $($T:ident),* $(,)*>
-     for tuple_struct $struct_name:path { $($field:ident $(-> $delegate:tt)*),*  $(,)* }) => {
-        impl<'a, $($lt $(: $lt_bound)*,)* $($T,)*>
+    (impl<$($T:ident),* $(,)?>
+     for tuple_struct $struct_name:path { $($field:ident $(-> $delegate:tt)?),*  $(,)? }) => {
+        impl<$($T,)*>
             ::rustc_data_structures::stable_hasher::HashStable<$crate::ich::StableHashingContext<'a>> for $struct_name
             where $($T: ::rustc_data_structures::stable_hasher::HashStable<$crate::ich::StableHashingContext<'a>>),*
         {
@@ -164,7 +160,7 @@ macro_rules! impl_stable_hash_for {
                     $(ref $field),*
                 ) = *self;
 
-                $( __impl_stable_hash_field!($field, __ctx, __hasher $(, $delegate)*) );*
+                $( __impl_stable_hash_field!($field, __ctx, __hasher $(, $delegate)?) );*
             }
         }
     };
@@ -174,7 +170,7 @@ macro_rules! impl_stable_hash_for {
 macro_rules! impl_stable_hash_for_spanned {
     ($T:path) => (
 
-        impl<'a, 'tcx> HashStable<StableHashingContext<'a>> for ::syntax::source_map::Spanned<$T>
+        impl HashStable<StableHashingContext<'a>> for ::syntax::source_map::Spanned<$T>
         {
             #[inline]
             fn hash_stable<W: StableHasherResult>(&self,
@@ -199,7 +195,7 @@ macro_rules! CloneLiftImpls {
         $(
             impl<$tcx> $crate::ty::Lift<$tcx> for $ty {
                 type Lifted = Self;
-                fn lift_to_tcx<'a, 'gcx>(&self, _: $crate::ty::TyCtxt<'a, 'gcx, $tcx>) -> Option<Self> {
+                fn lift_to_tcx(&self, _: $crate::ty::TyCtxt<$tcx>) -> Option<Self> {
                     Some(Clone::clone(self))
                 }
             }
@@ -222,7 +218,7 @@ macro_rules! CloneTypeFoldableImpls {
     (for <$tcx:lifetime> { $($ty:ty,)+ }) => {
         $(
             impl<$tcx> $crate::ty::fold::TypeFoldable<$tcx> for $ty {
-                fn super_fold_with<'gcx: $tcx, F: $crate::ty::fold::TypeFolder<'gcx, $tcx>>(
+                fn super_fold_with<F: $crate::ty::fold::TypeFolder<$tcx>>(
                     &self,
                     _: &mut F
                 ) -> $ty {
@@ -261,14 +257,14 @@ macro_rules! CloneTypeFoldableAndLiftImpls {
 macro_rules! BraceStructLiftImpl {
     (impl<$($p:tt),*> Lift<$tcx:tt> for $s:path {
         type Lifted = $lifted:ty;
-        $($field:ident),* $(,)*
+        $($field:ident),* $(,)?
     } $(where $($wc:tt)*)*) => {
         impl<$($p),*> $crate::ty::Lift<$tcx> for $s
             $(where $($wc)*)*
         {
             type Lifted = $lifted;
 
-            fn lift_to_tcx<'b, 'gcx>(&self, tcx: TyCtxt<'b, 'gcx, 'tcx>) -> Option<$lifted> {
+            fn lift_to_tcx(&self, tcx: TyCtxt<$tcx>) -> Option<$lifted> {
                 $(let $field = tcx.lift(&self.$field)?;)*
                 Some(Self::Lifted { $($field),* })
             }
@@ -287,7 +283,7 @@ macro_rules! EnumLiftImpl {
         {
             type Lifted = $lifted;
 
-            fn lift_to_tcx<'b, 'gcx>(&self, tcx: TyCtxt<'b, 'gcx, 'tcx>) -> Option<$lifted> {
+            fn lift_to_tcx(&self, tcx: TyCtxt<$tcx>) -> Option<$lifted> {
                 EnumLiftImpl!(@Variants(self, tcx) input($($variants)*) output())
             }
         }
@@ -331,12 +327,12 @@ macro_rules! EnumLiftImpl {
 #[macro_export]
 macro_rules! BraceStructTypeFoldableImpl {
     (impl<$($p:tt),*> TypeFoldable<$tcx:tt> for $s:path {
-        $($field:ident),* $(,)*
+        $($field:ident),* $(,)?
     } $(where $($wc:tt)*)*) => {
         impl<$($p),*> $crate::ty::fold::TypeFoldable<$tcx> for $s
             $(where $($wc)*)*
         {
-            fn super_fold_with<'gcx: $tcx, V: $crate::ty::fold::TypeFolder<'gcx, $tcx>>(
+            fn super_fold_with<V: $crate::ty::fold::TypeFolder<$tcx>>(
                 &self,
                 folder: &mut V,
             ) -> Self {
@@ -358,12 +354,12 @@ macro_rules! BraceStructTypeFoldableImpl {
 #[macro_export]
 macro_rules! TupleStructTypeFoldableImpl {
     (impl<$($p:tt),*> TypeFoldable<$tcx:tt> for $s:path {
-        $($field:ident),* $(,)*
+        $($field:ident),* $(,)?
     } $(where $($wc:tt)*)*) => {
         impl<$($p),*> $crate::ty::fold::TypeFoldable<$tcx> for $s
             $(where $($wc)*)*
         {
-            fn super_fold_with<'gcx: $tcx, V: $crate::ty::fold::TypeFolder<'gcx, $tcx>>(
+            fn super_fold_with<V: $crate::ty::fold::TypeFolder<$tcx>>(
                 &self,
                 folder: &mut V,
             ) -> Self {
@@ -390,7 +386,7 @@ macro_rules! EnumTypeFoldableImpl {
         impl<$($p),*> $crate::ty::fold::TypeFoldable<$tcx> for $s
             $(where $($wc)*)*
         {
-            fn super_fold_with<'gcx: $tcx, V: $crate::ty::fold::TypeFolder<'gcx, $tcx>>(
+            fn super_fold_with<V: $crate::ty::fold::TypeFolder<$tcx>>(
                 &self,
                 folder: &mut V,
             ) -> Self {
@@ -430,7 +426,7 @@ macro_rules! EnumTypeFoldableImpl {
     };
 
     (@FoldVariants($this:expr, $folder:expr)
-     input( ($variant:path) { $($variant_arg:ident),* $(,)* } , $($input:tt)*)
+     input( ($variant:path) { $($variant_arg:ident),* $(,)? } , $($input:tt)*)
      output( $($output:tt)*) ) => {
         EnumTypeFoldableImpl!(
             @FoldVariants($this, $folder)
@@ -484,7 +480,7 @@ macro_rules! EnumTypeFoldableImpl {
     };
 
     (@VisitVariants($this:expr, $visitor:expr)
-     input( ($variant:path) { $($variant_arg:ident),* $(,)* } , $($input:tt)*)
+     input( ($variant:path) { $($variant_arg:ident),* $(,)? } , $($input:tt)*)
      output( $($output:tt)*) ) => {
         EnumTypeFoldableImpl!(
             @VisitVariants($this, $visitor)
@@ -513,4 +509,3 @@ macro_rules! EnumTypeFoldableImpl {
         )
     };
 }
-

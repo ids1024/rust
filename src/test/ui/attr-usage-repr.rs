@@ -1,6 +1,6 @@
 #![feature(repr_simd)]
 
-#[repr(C)] //~ ERROR: attribute should be applied to struct, enum or union
+#[repr(C)] //~ ERROR: attribute should be applied to struct, enum, or union
 fn f() {}
 
 #[repr(C)]
@@ -18,7 +18,7 @@ struct SInt(f64, f64);
 #[repr(C)]
 enum EExtern { A, B }
 
-#[repr(align(8))] //~ ERROR: attribute should be applied to struct
+#[repr(align(8))]
 enum EAlign { A, B }
 
 #[repr(packed)] //~ ERROR: attribute should be applied to struct

@@ -1,13 +1,13 @@
 //! # Debug Info Module
 //!
 //! This module serves the purpose of generating debug symbols. We use LLVM's
-//! [source level debugging](http://!llvm.org/docs/SourceLevelDebugging.html)
+//! [source level debugging](https://llvm.org/docs/SourceLevelDebugging.html)
 //! features for generating the debug information. The general principle is
 //! this:
 //!
 //! Given the right metadata in the LLVM IR, the LLVM code generator is able to
 //! create DWARF debug symbols for the given code. The
-//! [metadata](http://!llvm.org/docs/LangRef.html#metadata-type) is structured
+//! [metadata](https://llvm.org/docs/LangRef.html#metadata-type) is structured
 //! much like DWARF *debugging information entries* (DIE), representing type
 //! information such as datatype layout, function signatures, block layout,
 //! variable location and scope information, etc. It is the purpose of this
@@ -15,7 +15,7 @@
 //!
 //! As the exact format of metadata trees may change between different LLVM
 //! versions, we now use LLVM
-//! [DIBuilder](http://!llvm.org/docs/doxygen/html/classllvm_1_1DIBuilder.html)
+//! [DIBuilder](https://llvm.org/docs/doxygen/html/classllvm_1_1DIBuilder.html)
 //! to create metadata where possible. This will hopefully ease the adaption of
 //! this module to future LLVM versions.
 //!
@@ -160,7 +160,7 @@
 //!
 //! This algorithm also provides a stable ID for types that are defined in one
 //! crate but instantiated from metadata within another crate. We just have to
-//! take care to always map crate and node IDs back to the original crate
+//! take care to always map crate and `NodeId`s back to the original crate
 //! context.
 //!
 //! As a side-effect these unique type IDs also help to solve a problem arising
@@ -170,7 +170,7 @@
 //! with different concrete substitutions for `'a`, and thus there will be N
 //! `Ty` instances for the type `Struct<'a>` even though it is not generic
 //! otherwise. Unfortunately this means that we cannot use `ty::type_id()` as
-//! cheap identifier for type metadata---we have done this in the past, but it
+//! cheap identifier for type metadata -- we have done this in the past, but it
 //! led to unnecessary metadata duplication in the best case and LLVM
 //! assertions in the worst. However, the unique type ID as described above
 //! *can* be used as identifier. Since it is comparatively expensive to

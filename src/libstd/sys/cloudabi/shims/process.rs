@@ -1,10 +1,10 @@
-use ffi::OsStr;
-use fmt;
-use io;
-use sys::fs::File;
-use sys::pipe::AnonPipe;
-use sys::{unsupported, Void};
-use sys_common::process::{CommandEnv, DefaultEnvKey};
+use crate::ffi::OsStr;
+use crate::fmt;
+use crate::io;
+use crate::sys::fs::File;
+use crate::sys::pipe::AnonPipe;
+use crate::sys::{unsupported, Void};
+use crate::sys_common::process::{CommandEnv, DefaultEnvKey};
 
 ////////////////////////////////////////////////////////////////////////////////
 // Command
@@ -71,7 +71,7 @@ impl From<File> for Stdio {
 }
 
 impl fmt::Debug for Command {
-    fn fmt(&self, _f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, _f: &mut fmt::Formatter<'_>) -> fmt::Result {
         Ok(())
     }
 }
@@ -105,13 +105,13 @@ impl PartialEq for ExitStatus {
 impl Eq for ExitStatus {}
 
 impl fmt::Debug for ExitStatus {
-    fn fmt(&self, _f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, _f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.0 {}
     }
 }
 
 impl fmt::Display for ExitStatus {
-    fn fmt(&self, _f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, _f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.0 {}
     }
 }

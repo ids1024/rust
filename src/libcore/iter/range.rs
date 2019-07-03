@@ -1,7 +1,7 @@
-use convert::TryFrom;
-use mem;
-use ops::{self, Add, Sub};
-use usize;
+use crate::convert::TryFrom;
+use crate::mem;
+use crate::ops::{self, Add, Sub, Try};
+use crate::usize;
 
 use super::{FusedIterator, TrustedLen};
 
@@ -20,20 +20,27 @@ pub trait Step: Clone + PartialOrd + Sized {
     /// without overflow.
     fn steps_between(start: &Self, end: &Self) -> Option<usize>;
 
-    /// Replaces this step with `1`, returning itself
+    /// Replaces this step with `1`, returning itself.
     fn replace_one(&mut self) -> Self;
 
-    /// Replaces this step with `0`, returning itself
+    /// Replaces this step with `0`, returning itself.
     fn replace_zero(&mut self) -> Self;
 
-    /// Adds one to this step, returning the result
+    /// Adds one to this step, returning the result.
     fn add_one(&self) -> Self;
 
-    /// Subtracts one to this step, returning the result
+    /// Subtracts one to this step, returning the result.
     fn sub_one(&self) -> Self;
 
-    /// Add an usize, returning None on overflow
+    /// Adds a `usize`, returning `None` on overflow.
     fn add_usize(&self, n: usize) -> Option<Self>;
+
+    /// Subtracts a `usize`, returning `None` on underflow.
+    fn sub_usize(&self, n: usize) -> Option<Self> {
+        // this default implementation makes the addition of `sub_usize` a non-breaking change
+        let _ = n;
+        unimplemented!()
+    }
 }
 
 // These are still macro-generated because the integer literals resolve to different types.
@@ -68,11 +75,9 @@ macro_rules! step_impl_unsigned {
                    issue = "42168")]
         impl Step for $t {
             #[inline]
-            #[allow(trivial_numeric_casts)]
             fn steps_between(start: &$t, end: &$t) -> Option<usize> {
                 if *start < *end {
-                    // Note: We assume $t <= usize here
-                    Some((*end - *start) as usize)
+                    usize::try_from(*end - *start).ok()
                 } else {
                     Some(0)
                 }
@@ -83,6 +88,15 @@ macro_rules! step_impl_unsigned {
             fn add_usize(&self, n: usize) -> Option<Self> {
                 match <$t>::try_from(n) {
                     Ok(n_as_t) => self.checked_add(n_as_t),
+                    Err(_) => None,
+                }
+            }
+
+            #[inline]
+            #[allow(unreachable_patterns)]
+            fn sub_usize(&self, n: usize) -> Option<Self> {
+                match <$t>::try_from(n) {
+                    Ok(n_as_t) => self.checked_sub(n_as_t),
                     Err(_) => None,
                 }
             }
@@ -98,13 +112,11 @@ macro_rules! step_impl_signed {
                    issue = "42168")]
         impl Step for $t {
             #[inline]
-            #[allow(trivial_numeric_casts)]
             fn steps_between(start: &$t, end: &$t) -> Option<usize> {
                 if *start < *end {
-                    // Note: We assume $t <= isize here
-                    // Use .wrapping_sub and cast to usize to compute the
-                    // difference that may not fit inside the range of isize.
-                    Some((*end as isize).wrapping_sub(*start as isize) as usize)
+                    // Use .wrapping_sub and cast to unsigned to compute the
+                    // difference that may not fit inside the range of $t.
+                    usize::try_from(end.wrapping_sub(*start) as $unsigned).ok()
                 } else {
                     Some(0)
                 }
@@ -129,51 +141,33 @@ macro_rules! step_impl_signed {
                 }
             }
 
+            #[inline]
+            #[allow(unreachable_patterns)]
+            fn sub_usize(&self, n: usize) -> Option<Self> {
+                match <$unsigned>::try_from(n) {
+                    Ok(n_as_unsigned) => {
+                        // Wrapping in unsigned space handles cases like
+                        // `80_i8.sub_usize(200) == Some(-120_i8)`,
+                        // even though 200_usize is out of range for i8.
+                        let wrapped = (*self as $unsigned).wrapping_sub(n_as_unsigned) as $t;
+                        if wrapped <= *self {
+                            Some(wrapped)
+                        } else {
+                            None  // Subtraction underflowed
+                        }
+                    }
+                    Err(_) => None,
+                }
+            }
+
             step_identical_methods!();
         }
     )*)
 }
 
-macro_rules! step_impl_no_between {
-    ($($t:ty)*) => ($(
-        #[unstable(feature = "step_trait",
-                   reason = "likely to be replaced by finer-grained traits",
-                   issue = "42168")]
-        impl Step for $t {
-            #[inline]
-            fn steps_between(_start: &Self, _end: &Self) -> Option<usize> {
-                None
-            }
-
-            #[inline]
-            fn add_usize(&self, n: usize) -> Option<Self> {
-                self.checked_add(n as $t)
-            }
-
-            step_identical_methods!();
-        }
-    )*)
-}
-
-step_impl_unsigned!(usize u8 u16);
-#[cfg(not(target_pointer_width = "16"))]
-step_impl_unsigned!(u32);
-#[cfg(target_pointer_width = "16")]
-step_impl_no_between!(u32);
+step_impl_unsigned!(usize u8 u16 u32 u64 u128);
 step_impl_signed!([isize: usize] [i8: u8] [i16: u16]);
-#[cfg(not(target_pointer_width = "16"))]
-step_impl_signed!([i32: u32]);
-#[cfg(target_pointer_width = "16")]
-step_impl_no_between!(i32);
-#[cfg(target_pointer_width = "64")]
-step_impl_unsigned!(u64);
-#[cfg(target_pointer_width = "64")]
-step_impl_signed!([i64: u64]);
-// If the target pointer width is not 64-bits, we
-// assume here that it is less than 64-bits.
-#[cfg(not(target_pointer_width = "64"))]
-step_impl_no_between!(u64 i64);
-step_impl_no_between!(u128 i128);
+step_impl_signed!([i32: u32] [i64: u64] [i128: u128]);
 
 macro_rules! range_exact_iter_impl {
     ($($t:ty)*) => ($(
@@ -229,7 +223,7 @@ impl<A: Step> Iterator for ops::Range<A> {
     fn size_hint(&self) -> (usize, Option<usize>) {
         match Step::steps_between(&self.start, &self.end) {
             Some(hint) => (hint, Some(hint)),
-            None => (0, None)
+            None => (usize::MAX, None)
         }
     }
 
@@ -273,8 +267,8 @@ range_incl_exact_iter_impl!(u8 u16 i8 i16);
 //
 // They need to guarantee that .size_hint() is either exact, or that
 // the upper bound is None when it does not fit the type limits.
-range_trusted_len_impl!(usize isize u8 i8 u16 i16 u32 i32 i64 u64);
-range_incl_trusted_len_impl!(usize isize u8 i8 u16 i16 u32 i32 i64 u64);
+range_trusted_len_impl!(usize isize u8 i8 u16 i16 u32 i32 u64 i64 u128 i128);
+range_incl_trusted_len_impl!(usize isize u8 i8 u16 i16 u32 i32 u64 i64 u128 i128);
 
 #[stable(feature = "rust1", since = "1.0.0")]
 impl<A: Step> DoubleEndedIterator for ops::Range<A> {
@@ -286,6 +280,19 @@ impl<A: Step> DoubleEndedIterator for ops::Range<A> {
         } else {
             None
         }
+    }
+
+    #[inline]
+    fn nth_back(&mut self, n: usize) -> Option<A> {
+        if let Some(minus_n) = self.end.sub_usize(n) {
+            if minus_n > self.start {
+                self.end = minus_n.sub_one();
+                return Some(self.end.clone())
+            }
+        }
+
+        self.end = self.start.clone();
+        None
     }
 }
 
@@ -350,7 +357,7 @@ impl<A: Step> Iterator for ops::RangeInclusive<A> {
 
         match Step::steps_between(&self.start, &self.end) {
             Some(hint) => (hint.saturating_add(1), hint.checked_add(1)),
-            None => (0, None),
+            None => (usize::MAX, None),
         }
     }
 
@@ -362,17 +369,17 @@ impl<A: Step> Iterator for ops::RangeInclusive<A> {
         }
 
         if let Some(plus_n) = self.start.add_usize(n) {
-            use cmp::Ordering::*;
+            use crate::cmp::Ordering::*;
 
             match plus_n.partial_cmp(&self.end) {
                 Some(Less) => {
                     self.is_empty = Some(false);
                     self.start = plus_n.add_one();
-                    return Some(plus_n)
+                    return Some(plus_n);
                 }
                 Some(Equal) => {
                     self.is_empty = Some(true);
-                    return Some(plus_n)
+                    return Some(plus_n);
                 }
                 _ => {}
             }
@@ -380,6 +387,34 @@ impl<A: Step> Iterator for ops::RangeInclusive<A> {
 
         self.is_empty = Some(true);
         None
+    }
+
+    #[inline]
+    fn try_fold<B, F, R>(&mut self, init: B, mut f: F) -> R
+    where
+        Self: Sized, F: FnMut(B, Self::Item) -> R, R: Try<Ok=B>
+    {
+        self.compute_is_empty();
+
+        if self.is_empty() {
+            return Try::from_ok(init);
+        }
+
+        let mut accum = init;
+
+        while self.start < self.end {
+            let n = self.start.add_one();
+            let n = mem::replace(&mut self.start, n);
+            accum = f(accum, n)?;
+        }
+
+        self.is_empty = Some(true);
+
+        if self.start == self.end {
+            accum = f(accum, self.start.clone())?;
+        }
+
+        Try::from_ok(accum)
     }
 
     #[inline]
@@ -414,6 +449,61 @@ impl<A: Step> DoubleEndedIterator for ops::RangeInclusive<A> {
         } else {
             self.end.clone()
         })
+    }
+
+    #[inline]
+    fn nth_back(&mut self, n: usize) -> Option<A> {
+        self.compute_is_empty();
+        if self.is_empty.unwrap_or_default() {
+            return None;
+        }
+
+        if let Some(minus_n) = self.end.sub_usize(n) {
+            use crate::cmp::Ordering::*;
+
+            match minus_n.partial_cmp(&self.start) {
+                Some(Greater) => {
+                    self.is_empty = Some(false);
+                    self.end = minus_n.sub_one();
+                    return Some(minus_n);
+                }
+                Some(Equal) => {
+                    self.is_empty = Some(true);
+                    return Some(minus_n);
+                }
+                _ => {}
+            }
+        }
+
+        self.is_empty = Some(true);
+        None
+    }
+
+    #[inline]
+    fn try_rfold<B, F, R>(&mut self, init: B, mut f: F) -> R where
+        Self: Sized, F: FnMut(B, Self::Item) -> R, R: Try<Ok=B>
+    {
+        self.compute_is_empty();
+
+        if self.is_empty() {
+            return Try::from_ok(init);
+        }
+
+        let mut accum = init;
+
+        while self.start < self.end {
+            let n = self.end.sub_one();
+            let n = mem::replace(&mut self.end, n);
+            accum = f(accum, n)?;
+        }
+
+        self.is_empty = Some(true);
+
+        if self.start == self.end {
+            accum = f(accum, self.start.clone())?;
+        }
+
+        Try::from_ok(accum)
     }
 }
 

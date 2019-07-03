@@ -1,10 +1,9 @@
-use boxed::FnBox;
-use ffi::CStr;
-use io;
-use mem;
-use sys_common::thread::start_thread;
-use sys::{cvt, syscall};
-use time::Duration;
+use crate::ffi::CStr;
+use crate::io;
+use crate::mem;
+use crate::sys_common::thread::start_thread;
+use crate::sys::{cvt, syscall};
+use crate::time::Duration;
 
 pub const DEFAULT_MIN_STACK_SIZE: usize = 2 * 1024 * 1024;
 
@@ -19,7 +18,7 @@ unsafe impl Sync for Thread {}
 
 impl Thread {
     // unsafe: see thread::Builder::spawn_unchecked for safety requirements
-    pub unsafe fn new(_stack: usize, p: Box<dyn FnBox()>) -> io::Result<Thread> {
+    pub unsafe fn new(_stack: usize, p: Box<dyn FnOnce()>) -> io::Result<Thread> {
         let p = box p;
 
         let id = cvt(syscall::clone(syscall::CLONE_VM | syscall::CLONE_FS | syscall::CLONE_FILES))?;

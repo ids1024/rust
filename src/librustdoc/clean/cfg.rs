@@ -1,4 +1,4 @@
-//! Representation of a `#[doc(cfg(...))]` attribute.
+//! The representation of a `#[doc(cfg(...))]` attribute.
 
 // FIXME: Once the portability lint RFC is implemented (see tracking issue #41619),
 // switch to use those structures instead.
@@ -7,14 +7,14 @@ use std::mem;
 use std::fmt::{self, Write};
 use std::ops;
 
-use syntax::symbol::Symbol;
-use syntax::ast::{MetaItem, MetaItemKind, NestedMetaItem, NestedMetaItemKind, LitKind};
+use syntax::symbol::{Symbol, sym};
+use syntax::ast::{MetaItem, MetaItemKind, NestedMetaItem, LitKind};
 use syntax::parse::ParseSess;
 use syntax::feature_gate::Features;
 
 use syntax_pos::Span;
 
-use html::escape::Escape;
+use crate::html::escape::Escape;
 
 #[derive(Clone, RustcEncodable, RustcDecodable, Debug, PartialEq, Eq, Hash)]
 pub enum Cfg {
@@ -24,7 +24,7 @@ pub enum Cfg {
     False,
     /// A generic configuration option, e.g., `test` or `target_os = "linux"`.
     Cfg(Symbol, Option<Symbol>),
-    /// Negate a configuration requirement, i.e., `not(x)`.
+    /// Negates a configuration requirement, i.e., `not(x)`.
     Not(Box<Cfg>),
     /// Union of a list of configuration requirements, i.e., `any(...)`.
     Any(Vec<Cfg>),
@@ -41,9 +41,9 @@ pub struct InvalidCfgError {
 impl Cfg {
     /// Parses a `NestedMetaItem` into a `Cfg`.
     fn parse_nested(nested_cfg: &NestedMetaItem) -> Result<Cfg, InvalidCfgError> {
-        match nested_cfg.node {
-            NestedMetaItemKind::MetaItem(ref cfg) => Cfg::parse(cfg),
-            NestedMetaItemKind::Literal(ref lit) => Err(InvalidCfgError {
+        match nested_cfg {
+            NestedMetaItem::MetaItem(ref cfg) => Cfg::parse(cfg),
+            NestedMetaItem::Literal(ref lit) => Err(InvalidCfgError {
                 msg: "unexpected literal",
                 span: lit.span,
             }),
@@ -58,7 +58,13 @@ impl Cfg {
     /// If the content is not properly formatted, it will return an error indicating what and where
     /// the error is.
     pub fn parse(cfg: &MetaItem) -> Result<Cfg, InvalidCfgError> {
-        let name = cfg.name();
+        let name = match cfg.ident() {
+            Some(ident) => ident.name,
+            None => return Err(InvalidCfgError {
+                msg: "expected a single identifier",
+                span: cfg.span
+            }),
+        };
         match cfg.node {
             MetaItemKind::Word => Ok(Cfg::Cfg(name, None)),
             MetaItemKind::NameValue(ref lit) => match lit.node {
@@ -180,7 +186,7 @@ impl Cfg {
 
     fn should_use_with_in_description(&self) -> bool {
         match *self {
-            Cfg::Cfg(ref name, _) if name == &"target_feature" => true,
+            Cfg::Cfg(name, _) if name == sym::target_feature => true,
             _ => false,
         }
     }
@@ -261,7 +267,7 @@ impl ops::BitOr for Cfg {
 struct Html<'a>(&'a Cfg, bool);
 
 fn write_with_opt_paren<T: fmt::Display>(
-    fmt: &mut fmt::Formatter,
+    fmt: &mut fmt::Formatter<'_>,
     has_paren: bool,
     obj: T,
 ) -> fmt::Result {
@@ -277,7 +283,7 @@ fn write_with_opt_paren<T: fmt::Display>(
 
 
 impl<'a> fmt::Display for Html<'a> {
-    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         match *self.0 {
             Cfg::Not(ref child) => match **child {
                 Cfg::Any(ref sub_cfgs) => {
@@ -332,7 +338,6 @@ impl<'a> fmt::Display for Html<'a> {
                     ("debug_assertions", None) => "debug-assertions enabled",
                     ("target_os", Some(os)) => match &*os.as_str() {
                         "android" => "Android",
-                        "bitrig" => "Bitrig",
                         "dragonfly" => "DragonFly BSD",
                         "emscripten" => "Emscripten",
                         "freebsd" => "FreeBSD",
@@ -408,11 +413,12 @@ impl<'a> fmt::Display for Html<'a> {
 mod test {
     use super::Cfg;
 
-    use syntax::symbol::Symbol;
-    use syntax::ast::*;
-    use syntax::source_map::dummy_spanned;
     use syntax_pos::DUMMY_SP;
-    use syntax::with_globals;
+    use syntax::ast::*;
+    use syntax::attr;
+    use syntax::source_map::dummy_spanned;
+    use syntax::symbol::Symbol;
+    use syntax::with_default_globals;
 
     fn word_cfg(s: &str) -> Cfg {
         Cfg::Cfg(Symbol::intern(s), None)
@@ -424,33 +430,33 @@ mod test {
 
     fn dummy_meta_item_word(name: &str) -> MetaItem {
         MetaItem {
-            ident: Path::from_ident(Ident::from_str(name)),
+            path: Path::from_ident(Ident::from_str(name)),
             node: MetaItemKind::Word,
             span: DUMMY_SP,
         }
     }
 
     macro_rules! dummy_meta_item_list {
-        ($name:ident, [$($list:ident),* $(,)*]) => {
+        ($name:ident, [$($list:ident),* $(,)?]) => {
             MetaItem {
-                ident: Path::from_ident(Ident::from_str(stringify!($name))),
+                path: Path::from_ident(Ident::from_str(stringify!($name))),
                 node: MetaItemKind::List(vec![
                     $(
-                        dummy_spanned(NestedMetaItemKind::MetaItem(
+                        NestedMetaItem::MetaItem(
                             dummy_meta_item_word(stringify!($list)),
-                        )),
+                        ),
                     )*
                 ]),
                 span: DUMMY_SP,
             }
         };
 
-        ($name:ident, [$($list:expr),* $(,)*]) => {
+        ($name:ident, [$($list:expr),* $(,)?]) => {
             MetaItem {
-                ident: Path::from_ident(Ident::from_str(stringify!($name))),
+                path: Path::from_ident(Ident::from_str(stringify!($name))),
                 node: MetaItemKind::List(vec![
                     $(
-                        dummy_spanned(NestedMetaItemKind::MetaItem($list)),
+                        NestedMetaItem::MetaItem($list),
                     )*
                 ]),
                 span: DUMMY_SP,
@@ -460,7 +466,7 @@ mod test {
 
     #[test]
     fn test_cfg_not() {
-        with_globals(|| {
+        with_default_globals(|| {
             assert_eq!(!Cfg::False, Cfg::True);
             assert_eq!(!Cfg::True, Cfg::False);
             assert_eq!(!word_cfg("test"), Cfg::Not(Box::new(word_cfg("test"))));
@@ -478,7 +484,7 @@ mod test {
 
     #[test]
     fn test_cfg_and() {
-        with_globals(|| {
+        with_default_globals(|| {
             let mut x = Cfg::False;
             x &= Cfg::True;
             assert_eq!(x, Cfg::False);
@@ -530,7 +536,7 @@ mod test {
 
     #[test]
     fn test_cfg_or() {
-        with_globals(|| {
+        with_default_globals(|| {
             let mut x = Cfg::True;
             x |= Cfg::False;
             assert_eq!(x, Cfg::True);
@@ -582,18 +588,14 @@ mod test {
 
     #[test]
     fn test_parse_ok() {
-        with_globals(|| {
+        with_default_globals(|| {
             let mi = dummy_meta_item_word("all");
             assert_eq!(Cfg::parse(&mi), Ok(word_cfg("all")));
 
-            let mi = MetaItem {
-                ident: Path::from_ident(Ident::from_str("all")),
-                node: MetaItemKind::NameValue(dummy_spanned(LitKind::Str(
-                    Symbol::intern("done"),
-                    StrStyle::Cooked,
-                ))),
-                span: DUMMY_SP,
-            };
+            let mi = attr::mk_name_value_item_str(
+                Ident::from_str("all"),
+                dummy_spanned(Symbol::intern("done"))
+            );
             assert_eq!(Cfg::parse(&mi), Ok(name_value_cfg("all", "done")));
 
             let mi = dummy_meta_item_list!(all, [a, b]);
@@ -620,12 +622,13 @@ mod test {
 
     #[test]
     fn test_parse_err() {
-        with_globals(|| {
-            let mi = MetaItem {
-                ident: Path::from_ident(Ident::from_str("foo")),
-                node: MetaItemKind::NameValue(dummy_spanned(LitKind::Bool(false))),
-                span: DUMMY_SP,
-            };
+        with_default_globals(|| {
+            let mi = attr::mk_name_value_item(
+                DUMMY_SP,
+                Ident::from_str("foo"),
+                LitKind::Bool(false),
+                DUMMY_SP,
+            );
             assert!(Cfg::parse(&mi).is_err());
 
             let mi = dummy_meta_item_list!(not, [a, b]);
@@ -658,7 +661,7 @@ mod test {
 
     #[test]
     fn test_render_short_html() {
-        with_globals(|| {
+        with_default_globals(|| {
             assert_eq!(
                 word_cfg("unix").render_short_html(),
                 "Unix"
@@ -738,7 +741,7 @@ mod test {
 
     #[test]
     fn test_render_long_html() {
-        with_globals(|| {
+        with_default_globals(|| {
             assert_eq!(
                 word_cfg("unix").render_long_html(),
                 "This is supported on <strong>Unix</strong> only."

@@ -7,8 +7,6 @@
 //
 // run-pass
 
-#![feature(nll)]
-
 pub trait Hasher {
     type Out: Eq;
 }
@@ -18,7 +16,7 @@ pub trait NodeCodec<H: Hasher> {
 }
 
 pub trait Trie<H: Hasher, C: NodeCodec<H>> {
-    /// Return the root of the trie.
+    /// Returns the root of the trie.
     fn root(&self) -> &H::Out;
 
     /// Is the trie empty?

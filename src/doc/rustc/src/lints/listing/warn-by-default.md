@@ -285,26 +285,6 @@ warning: functions generic over types must be mangled
   |
 ```
 
-## overflowing-literals
-
-This lint detects literal out of range for its type. Some
-example code that triggers this lint:
-
-```rust
-let x: u8 = 1000;
-```
-
-This will produce:
-
-```text
-warning: literal out of range for u8
- --> src/main.rs:2:17
-  |
-2 |     let x: u8 = 1000;
-  |                 ^^^^
-  |
-```
-
 ## path-statements
 
 This lint detects path statements with no effect. Some example code that
@@ -549,18 +529,21 @@ This lint detects bounds in type aliases. These are not currently enforced.
 Some example code that triggers this lint:
 
 ```rust
+#[allow(dead_code)]
 type SendVec<T: Send> = Vec<T>;
 ```
 
 This will produce:
 
 ```text
-warning: type alias is never used: `SendVec`
- --> src/main.rs:1:1
+warning: bounds on generic parameters are not enforced in type aliases
+ --> src/lib.rs:2:17
   |
-1 | type SendVec<T: Send> = Vec<T>;
-  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+2 | type SendVec<T: Send> = Vec<T>;
+  |                 ^^^^
   |
+  = note: #[warn(type_alias_bounds)] on by default
+  = help: the bound will not be checked when the type alias is used, and should be removed
 ```
 
 ## tyvar-behind-raw-pointer
@@ -745,19 +728,17 @@ This lint detects attributes that were not used by the compiler. Some
 example code that triggers this lint:
 
 ```rust
-#![feature(custom_attribute)]
-
-#![mutable_doc]
+#![macro_export]
 ```
 
 This will produce:
 
 ```text
 warning: unused attribute
- --> src/main.rs:4:1
+ --> src/main.rs:1:1
   |
-4 | #![mutable_doc]
-  | ^^^^^^^^^^^^^^^
+1 | #![macro_export]
+  | ^^^^^^^^^^^^^^^^
   |
 ```
 

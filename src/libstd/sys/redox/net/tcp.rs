@@ -1,12 +1,12 @@
-use cmp;
-use io::{self, Error, ErrorKind, Result};
-use mem;
-use net::{SocketAddr, Shutdown};
-use path::Path;
-use sys::fs::{File, OpenOptions};
-use sys::syscall::TimeSpec;
-use sys_common::{AsInner, FromInner, IntoInner};
-use time::Duration;
+use crate::cmp;
+use crate::io::{self, Error, ErrorKind, Result, IoSlice, IoSliceMut};
+use crate::mem;
+use crate::net::{SocketAddr, Shutdown};
+use crate::path::Path;
+use crate::sys::fs::{File, OpenOptions};
+use crate::sys::syscall::TimeSpec;
+use crate::sys_common::{AsInner, FromInner, IntoInner};
+use crate::time::Duration;
 
 use super::{path_to_peer_addr, path_to_local_addr};
 
@@ -34,8 +34,16 @@ impl TcpStream {
         self.0.read(buf)
     }
 
+    pub fn read_vectored(&self, bufs: &mut [IoSliceMut<'_>]) -> io::Result<usize> {
+        io::default_read_vectored(|b| self.read(b), bufs)
+    }
+
     pub fn write(&self, buf: &[u8]) -> Result<usize> {
         self.0.write(buf)
+    }
+
+    pub fn write_vectored(&self, bufs: &[IoSlice<'_>]) -> io::Result<usize> {
+        io::default_write_vectored(|b| self.write(b), bufs)
     }
 
     pub fn take_error(&self) -> Result<Option<Error>> {

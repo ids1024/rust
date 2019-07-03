@@ -1,14 +1,16 @@
 use std::ffi::OsStr;
 use std::env;
 use std::path::PathBuf;
-use common::Config;
+use crate::common::Config;
+
+use log::*;
 
 /// Conversion table from triple OS name to Rust SYSNAME
 const OS_TABLE: &'static [(&'static str, &'static str)] = &[
     ("android", "android"),
     ("androideabi", "android"),
-    ("bitrig", "bitrig"),
     ("cloudabi", "cloudabi"),
+    ("cuda", "cuda"),
     ("darwin", "macos"),
     ("dragonfly", "dragonfly"),
     ("emscripten", "emscripten"),
@@ -20,9 +22,11 @@ const OS_TABLE: &'static [(&'static str, &'static str)] = &[
     ("l4re", "l4re"),
     ("linux", "linux"),
     ("mingw32", "windows"),
+    ("none", "none"),
     ("netbsd", "netbsd"),
     ("openbsd", "openbsd"),
     ("redox", "redox"),
+    ("sgx", "sgx"),
     ("solaris", "solaris"),
     ("win32", "windows"),
     ("windows", "windows"),
@@ -45,8 +49,17 @@ const ARCH_TABLE: &'static [(&'static str, &'static str)] = &[
     ("mips", "mips"),
     ("mips64", "mips64"),
     ("mips64el", "mips64"),
+    ("mipsisa32r6", "mips"),
+    ("mipsisa32r6el", "mips"),
+    ("mipsisa64r6", "mips64"),
+    ("mipsisa64r6el", "mips64"),
     ("mipsel", "mips"),
+    ("mipsisa32r6", "mips"),
+    ("mipsisa32r6el", "mips"),
+    ("mipsisa64r6", "mips64"),
+    ("mipsisa64r6el", "mips64"),
     ("msp430", "msp430"),
+    ("nvptx64", "nvptx64"),
     ("powerpc", "powerpc"),
     ("powerpc64", "powerpc64"),
     ("powerpc64le", "powerpc64"),
@@ -154,6 +167,7 @@ fn test_get_arch_failure() {
 fn test_get_arch() {
     assert_eq!("x86_64", get_arch("x86_64-unknown-linux-gnu"));
     assert_eq!("x86_64", get_arch("amd64"));
+    assert_eq!("nvptx64", get_arch("nvptx64-nvidia-cuda"));
 }
 
 #[test]
@@ -168,4 +182,8 @@ fn test_matches_os() {
     assert!(matches_os("wasm32-unknown-unknown", "emscripten"));
     assert!(matches_os("wasm32-unknown-unknown", "wasm32-bare"));
     assert!(!matches_os("wasm32-unknown-unknown", "windows"));
+    assert!(matches_os("thumbv6m0-none-eabi", "none"));
+    assert!(matches_os("riscv32imc-unknown-none-elf", "none"));
+    assert!(matches_os("nvptx64-nvidia-cuda", "cuda"));
+    assert!(matches_os("x86_64-fortanix-unknown-sgx", "sgx"));
 }

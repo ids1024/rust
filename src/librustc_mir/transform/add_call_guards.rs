@@ -1,7 +1,7 @@
 use rustc::ty::TyCtxt;
 use rustc::mir::*;
 use rustc_data_structures::indexed_vec::{Idx, IndexVec};
-use transform::{MirPass, MirSource};
+use crate::transform::{MirPass, MirSource};
 
 #[derive(PartialEq)]
 pub enum AddCallGuards {
@@ -31,25 +31,22 @@ pub use self::AddCallGuards::*;
  */
 
 impl MirPass for AddCallGuards {
-    fn run_pass<'a, 'tcx>(&self,
-                          _tcx: TyCtxt<'a, 'tcx, 'tcx>,
-                          _src: MirSource,
-                          mir: &mut Mir<'tcx>) {
-        self.add_call_guards(mir);
+    fn run_pass<'tcx>(&self, _tcx: TyCtxt<'tcx>, _src: MirSource<'tcx>, body: &mut Body<'tcx>) {
+        self.add_call_guards(body);
     }
 }
 
 impl AddCallGuards {
-    pub fn add_call_guards(&self, mir: &mut Mir) {
+    pub fn add_call_guards(&self, body: &mut Body<'_>) {
         let pred_count: IndexVec<_, _> =
-            mir.predecessors().iter().map(|ps| ps.len()).collect();
+            body.predecessors().iter().map(|ps| ps.len()).collect();
 
         // We need a place to store the new blocks generated
         let mut new_blocks = Vec::new();
 
-        let cur_len = mir.basic_blocks().len();
+        let cur_len = body.basic_blocks().len();
 
-        for block in mir.basic_blocks_mut() {
+        for block in body.basic_blocks_mut() {
             match block.terminator {
                 Some(Terminator {
                     kind: TerminatorKind::Call {
@@ -81,6 +78,6 @@ impl AddCallGuards {
 
         debug!("Broke {} N edges", new_blocks.len());
 
-        mir.basic_blocks_mut().extend(new_blocks);
+        body.basic_blocks_mut().extend(new_blocks);
     }
 }

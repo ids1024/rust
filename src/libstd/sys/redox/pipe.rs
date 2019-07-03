@@ -1,6 +1,6 @@
-use io;
-use sys::{cvt, syscall};
-use sys::fd::FileDesc;
+use crate::io::{self, IoSlice, IoSliceMut};
+use crate::sys::{cvt, syscall};
+use crate::sys::fd::FileDesc;
 
 ////////////////////////////////////////////////////////////////////////////////
 // Anonymous pipes
@@ -24,8 +24,16 @@ impl AnonPipe {
         self.0.read(buf)
     }
 
+    pub fn read_vectored(&self, bufs: &mut [IoSliceMut<'_>]) -> io::Result<usize> {
+        crate::io::default_read_vectored(|buf| self.read(buf), bufs)
+    }
+
     pub fn write(&self, buf: &[u8]) -> io::Result<usize> {
         self.0.write(buf)
+    }
+
+    pub fn write_vectored(&self, bufs: &[IoSlice<'_>]) -> io::Result<usize> {
+        crate::io::default_write_vectored(|buf| self.write(buf), bufs)
     }
 
     pub fn fd(&self) -> &FileDesc { &self.0 }

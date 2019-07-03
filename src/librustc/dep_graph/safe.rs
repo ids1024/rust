@@ -1,9 +1,9 @@
 //! The `DepGraphSafe` trait
 
-use hir::BodyId;
-use hir::def_id::DefId;
+use crate::hir::BodyId;
+use crate::hir::def_id::DefId;
 use syntax::ast::NodeId;
-use ty::TyCtxt;
+use crate::ty::TyCtxt;
 
 /// The `DepGraphSafe` trait is used to specify what kinds of values
 /// are safe to "leak" into a task. The idea is that this should be
@@ -33,8 +33,7 @@ impl DepGraphSafe for DefId {
 
 /// The type context itself can be used to access all kinds of tracked
 /// state, but those accesses should always generate read events.
-impl<'a, 'gcx, 'tcx> DepGraphSafe for TyCtxt<'a, 'gcx, 'tcx> {
-}
+impl<'tcx> DepGraphSafe for TyCtxt<'tcx> {}
 
 /// Tuples make it easy to build up state.
 impl<A, B> DepGraphSafe for (A, B)

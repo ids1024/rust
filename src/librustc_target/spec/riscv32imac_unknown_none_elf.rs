@@ -1,4 +1,4 @@
-use spec::{LinkerFlavor, LldFlavor, PanicStrategy,
+use crate::spec::{LinkerFlavor, LldFlavor, PanicStrategy,
            Target, TargetOptions, TargetResult};
 
 pub fn target() -> TargetResult {
@@ -18,13 +18,14 @@ pub fn target() -> TargetResult {
             linker: Some("rust-lld".to_string()),
             cpu: "generic-rv32".to_string(),
             max_atomic_width: Some(32),
-            atomic_cas: false, // incomplete +a extension
+            atomic_cas: true,
             features: "+m,+a,+c".to_string(),
             executables: true,
             panic_strategy: PanicStrategy::Abort,
             relocation_model: "static".to_string(),
             emit_debug_gdb_scripts: false,
             abi_blacklist: super::riscv_base::abi_blacklist(),
+            eliminate_frame_pointer: false,
             .. Default::default()
         },
     })

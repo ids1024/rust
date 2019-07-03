@@ -15,29 +15,29 @@ mod libc {
     pub struct sockaddr_un;
 }
 
-use ascii;
-use ffi::OsStr;
-use fmt;
-use io::{self, Initializer};
-use mem;
-use net::{self, Shutdown};
-use os::unix::ffi::OsStrExt;
-use os::unix::io::{RawFd, AsRawFd, FromRawFd, IntoRawFd};
-use path::Path;
-use time::Duration;
-use sys::{self, cvt};
-use sys::net::Socket;
-use sys_common::{self, AsInner, FromInner, IntoInner};
+use crate::ascii;
+use crate::ffi::OsStr;
+use crate::fmt;
+use crate::io::{self, Initializer, IoSlice, IoSliceMut};
+use crate::mem;
+use crate::net::{self, Shutdown};
+use crate::os::unix::ffi::OsStrExt;
+use crate::os::unix::io::{RawFd, AsRawFd, FromRawFd, IntoRawFd};
+use crate::path::Path;
+use crate::time::Duration;
+use crate::sys::{self, cvt};
+use crate::sys::net::Socket;
+use crate::sys_common::{self, AsInner, FromInner, IntoInner};
 
 #[cfg(any(target_os = "linux", target_os = "android",
           target_os = "dragonfly", target_os = "freebsd",
           target_os = "openbsd", target_os = "netbsd",
-          target_os = "haiku", target_os = "bitrig"))]
+          target_os = "haiku"))]
 use libc::MSG_NOSIGNAL;
 #[cfg(not(any(target_os = "linux", target_os = "android",
               target_os = "dragonfly", target_os = "freebsd",
               target_os = "openbsd", target_os = "netbsd",
-              target_os = "haiku", target_os = "bitrig")))]
+              target_os = "haiku")))]
 const MSG_NOSIGNAL: libc::c_int = 0x0;
 
 fn sun_path_offset() -> usize {
@@ -134,7 +134,7 @@ impl SocketAddr {
         })
     }
 
-    /// Returns true if and only if the address is unnamed.
+    /// Returns `true` if the address is unnamed.
     ///
     /// # Examples
     ///
@@ -219,7 +219,7 @@ impl SocketAddr {
 
 #[stable(feature = "unix_socket", since = "1.10.0")]
 impl fmt::Debug for SocketAddr {
-    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.address() {
             AddressKind::Unnamed => write!(fmt, "(unnamed)"),
             AddressKind::Abstract(name) => write!(fmt, "{} (abstract)", AsciiEscaped(name)),
@@ -231,7 +231,7 @@ impl fmt::Debug for SocketAddr {
 struct AsciiEscaped<'a>(&'a [u8]);
 
 impl<'a> fmt::Display for AsciiEscaped<'a> {
-    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(fmt, "\"")?;
         for byte in self.0.iter().cloned().flat_map(ascii::escape_default) {
             write!(fmt, "{}", byte as char)?;
@@ -259,7 +259,7 @@ pub struct UnixStream(Socket);
 
 #[stable(feature = "unix_socket", since = "1.10.0")]
 impl fmt::Debug for UnixStream {
-    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut builder = fmt.debug_struct("UnixStream");
         builder.field("fd", self.0.as_inner());
         if let Ok(addr) = self.local_addr() {
@@ -516,7 +516,7 @@ impl UnixStream {
     /// ```
     ///
     /// # Platform specific
-    /// On Redox this always returns None.
+    /// On Redox this always returns `None`.
     #[stable(feature = "unix_socket", since = "1.10.0")]
     pub fn take_error(&self) -> io::Result<Option<io::Error>> {
         self.0.take_error()
@@ -551,6 +551,10 @@ impl io::Read for UnixStream {
         io::Read::read(&mut &*self, buf)
     }
 
+    fn read_vectored(&mut self, bufs: &mut [IoSliceMut<'_>]) -> io::Result<usize> {
+        io::Read::read_vectored(&mut &*self, bufs)
+    }
+
     #[inline]
     unsafe fn initializer(&self) -> Initializer {
         Initializer::nop()
@@ -561,6 +565,10 @@ impl io::Read for UnixStream {
 impl<'a> io::Read for &'a UnixStream {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         self.0.read(buf)
+    }
+
+    fn read_vectored(&mut self, bufs: &mut [IoSliceMut<'_>]) -> io::Result<usize> {
+        self.0.read_vectored(bufs)
     }
 
     #[inline]
@@ -575,6 +583,10 @@ impl io::Write for UnixStream {
         io::Write::write(&mut &*self, buf)
     }
 
+    fn write_vectored(&mut self, bufs: &[IoSlice<'_>]) -> io::Result<usize> {
+        io::Write::write_vectored(&mut &*self, bufs)
+    }
+
     fn flush(&mut self) -> io::Result<()> {
         io::Write::flush(&mut &*self)
     }
@@ -584,6 +596,10 @@ impl io::Write for UnixStream {
 impl<'a> io::Write for &'a UnixStream {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         self.0.write(buf)
+    }
+
+    fn write_vectored(&mut self, bufs: &[IoSlice<'_>]) -> io::Result<usize> {
+        self.0.write_vectored(bufs)
     }
 
     fn flush(&mut self) -> io::Result<()> {
@@ -703,7 +719,7 @@ pub struct UnixListener(Socket);
 
 #[stable(feature = "unix_socket", since = "1.10.0")]
 impl fmt::Debug for UnixListener {
-    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut builder = fmt.debug_struct("UnixListener");
         builder.field("fd", self.0.as_inner());
         if let Ok(addr) = self.local_addr() {
@@ -841,7 +857,7 @@ impl UnixListener {
     /// ```
     ///
     /// # Platform specific
-    /// On Redox this always returns None.
+    /// On Redox this always returns `None`.
     #[stable(feature = "unix_socket", since = "1.10.0")]
     pub fn take_error(&self) -> io::Result<Option<io::Error>> {
         self.0.take_error()
@@ -982,7 +998,7 @@ pub struct UnixDatagram(Socket);
 
 #[stable(feature = "unix_socket", since = "1.10.0")]
 impl fmt::Debug for UnixDatagram {
-    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut builder = fmt.debug_struct("UnixDatagram");
         builder.field("fd", self.0.as_inner());
         if let Ok(addr) = self.local_addr() {
@@ -1047,7 +1063,7 @@ impl UnixDatagram {
         Ok(UnixDatagram(inner))
     }
 
-    /// Create an unnamed pair of connected sockets.
+    /// Creates an unnamed pair of connected sockets.
     ///
     /// Returns two `UnixDatagrams`s which are connected to each other.
     ///
@@ -1465,11 +1481,11 @@ impl IntoRawFd for UnixDatagram {
 
 #[cfg(all(test, not(target_os = "emscripten")))]
 mod test {
-    use thread;
-    use io::{self, ErrorKind};
-    use io::prelude::*;
-    use time::Duration;
-    use sys_common::io::test::tmpdir;
+    use crate::thread;
+    use crate::io::{self, ErrorKind};
+    use crate::io::prelude::*;
+    use crate::time::Duration;
+    use crate::sys_common::io::test::tmpdir;
 
     use super::*;
 
@@ -1508,6 +1524,25 @@ mod test {
         drop(stream);
 
         thread.join().unwrap();
+    }
+
+    #[test]
+    fn vectored() {
+        let (mut s1, mut s2) = or_panic!(UnixStream::pair());
+
+        let len = or_panic!(s1.write_vectored(
+            &[IoSlice::new(b"hello"), IoSlice::new(b" "), IoSlice::new(b"world!")],
+        ));
+        assert_eq!(len, 12);
+
+        let mut buf1 = [0; 6];
+        let mut buf2 = [0; 7];
+        let len = or_panic!(s2.read_vectored(
+            &mut [IoSliceMut::new(&mut buf1), IoSliceMut::new(&mut buf2)],
+        ));
+        assert_eq!(len, 12);
+        assert_eq!(&buf1, b"hello ");
+        assert_eq!(&buf2, b"world!\0");
     }
 
     #[test]

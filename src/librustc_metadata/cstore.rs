@@ -1,7 +1,7 @@
 // The crate store - a central repo for information collected about external
 // crates and libraries
 
-use schema;
+use crate::schema;
 use rustc::hir::def_id::{CrateNum, DefIndex};
 use rustc::hir::map::definitions::DefPathTable;
 use rustc::middle::cstore::{DepKind, ExternCrate, MetadataLoader};
@@ -19,7 +19,7 @@ pub use rustc::middle::cstore::{NativeLibrary, NativeLibraryKind, LinkagePrefere
 pub use rustc::middle::cstore::NativeLibraryKind::*;
 pub use rustc::middle::cstore::{CrateSource, LibSource, ForeignModule};
 
-pub use cstore_impl::{provide, provide_extern};
+pub use crate::cstore_impl::{provide, provide_extern};
 
 // A map from external crate numbers (as decoded from some crate file) to
 // local crate numbers (as generated during this session). Each external
@@ -46,7 +46,7 @@ pub struct CrateMetadata {
     /// Original name of the crate.
     pub name: Symbol,
 
-    /// Name of the crate as imported.  I.e., if imported with
+    /// Name of the crate as imported. I.e., if imported with
     /// `extern crate foo as bar;` this will be `bar`.
     pub imported_name: Symbol,
 
@@ -64,11 +64,15 @@ pub struct CrateMetadata {
     /// Used for decoding interpret::AllocIds in a cached & thread-safe manner.
     pub alloc_decoding_state: AllocDecodingState,
 
-    pub root: schema::CrateRoot,
+    // NOTE(eddyb) we pass `'static` to a `'tcx` parameter because this
+    // lifetime is only used behind `Lazy` / `LazySeq`, and therefore
+    // acts like an universal (`for<'tcx>`), that is paired up with
+    // whichever `TyCtxt` is being used to decode those values.
+    pub root: schema::CrateRoot<'static>,
 
-    /// For each public item in this crate, we encode a key.  When the
+    /// For each public item in this crate, we encode a key. When the
     /// crate is loaded, we read all the keys and put them in this
-    /// hashmap, which gives the reverse mapping.  This allows us to
+    /// hashmap, which gives the reverse mapping. This allows us to
     /// quickly retrace a `DefPath`, which is needed for incremental
     /// compilation support.
     pub def_path_table: Lrc<DefPathTable>,
@@ -79,6 +83,10 @@ pub struct CrateMetadata {
     pub source: CrateSource,
 
     pub proc_macros: Option<Vec<(ast::Name, Lrc<SyntaxExtension>)>>,
+
+    /// Whether or not this crate should be consider a private dependency
+    /// for purposes of the 'exported_private_dependencies' lint
+    pub private_dep: bool
 }
 
 pub struct CStore {
@@ -114,7 +122,8 @@ impl CStore {
     }
 
     pub(super) fn get_crate_data(&self, cnum: CrateNum) -> Lrc<CrateMetadata> {
-        self.metas.borrow()[cnum].clone().unwrap()
+        self.metas.borrow()[cnum].clone()
+            .unwrap_or_else(|| panic!("Failed to get crate data for {:?}", cnum))
     }
 
     pub(super) fn set_crate_data(&self, cnum: CrateNum, data: Lrc<CrateMetadata>) {

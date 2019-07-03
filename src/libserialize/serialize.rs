@@ -175,7 +175,7 @@ pub trait Decoder {
     fn read_f64(&mut self) -> Result<f64, Self::Error>;
     fn read_f32(&mut self) -> Result<f32, Self::Error>;
     fn read_char(&mut self) -> Result<char, Self::Error>;
-    fn read_str(&mut self) -> Result<Cow<str>, Self::Error>;
+    fn read_str(&mut self) -> Result<Cow<'_, str>, Self::Error>;
 
     // Compound types:
     fn read_enum<T, F>(&mut self, _name: &str, f: F) -> Result<T, Self::Error>
@@ -723,10 +723,17 @@ macro_rules! peel {
     ($name:ident, $($other:ident,)*) => (tuple! { $($other,)* })
 }
 
-/// Evaluates to the number of identifiers passed to it, for example: `count_idents!(a, b, c) == 3
-macro_rules! count_idents {
-    () => { 0 };
-    ($_i:ident, $($rest:ident,)*) => { 1 + count_idents!($($rest,)*) }
+/// Evaluates to the number of tokens passed to it.
+///
+/// Logarithmic counting: every one or two recursive expansions, the number of
+/// tokens to count is divided by two, instead of being reduced by one.
+/// Therefore, the recursion depth is the binary logarithm of the number of
+/// tokens to count, and the expanded tree is likewise very small.
+macro_rules! count {
+    ()                     => (0usize);
+    ($one:tt)              => (1usize);
+    ($($pairs:tt $_p:tt)*) => (count!($($pairs)*) << 1usize);
+    ($odd:tt $($rest:tt)*) => (count!($($rest)*) | 1usize);
 }
 
 macro_rules! tuple {
@@ -735,7 +742,7 @@ macro_rules! tuple {
         impl<$($name:Decodable),*> Decodable for ($($name,)*) {
             #[allow(non_snake_case)]
             fn decode<D: Decoder>(d: &mut D) -> Result<($($name,)*), D::Error> {
-                let len: usize = count_idents!($($name,)*);
+                let len: usize = count!($($name)*);
                 d.read_tuple(len, |d| {
                     let mut i = 0;
                     let ret = ($(d.read_tuple_arg({ i+=1; i-1 }, |d| -> Result<$name, D::Error> {
@@ -764,9 +771,15 @@ macro_rules! tuple {
 
 tuple! { T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, }
 
-impl Encodable for path::PathBuf {
+impl Encodable for path::Path {
     fn encode<S: Encoder>(&self, e: &mut S) -> Result<(), S::Error> {
         self.to_str().unwrap().encode(e)
+    }
+}
+
+impl Encodable for path::PathBuf {
+    fn encode<S: Encoder>(&self, e: &mut S) -> Result<(), S::Error> {
+        path::Path::encode(self, e)
     }
 }
 
@@ -824,7 +837,7 @@ impl<T:Decodable> Decodable for Arc<T> {
 /// Implement this trait on your `{Encodable,Decodable}::Error` types
 /// to override the default panic behavior for missing specializations.
 pub trait SpecializationError {
-    /// Create an error for a missing method specialization.
+    /// Creates an error for a missing method specialization.
     /// Defaults to panicking with type, trait & method names.
     /// `S` is the encoder/decoder state type,
     /// `T` is the type being encoded/decoded, and
@@ -911,4 +924,5 @@ impl<T: UseSpecializedDecodable> Decodable for T {
 impl<'a, T: ?Sized + Encodable> UseSpecializedEncodable for &'a T {}
 impl<T: ?Sized + Encodable> UseSpecializedEncodable for Box<T> {}
 impl<T: Decodable> UseSpecializedDecodable for Box<T> {}
-
+impl<'a, T: Decodable> UseSpecializedDecodable for &'a T {}
+impl<'a, T: Decodable> UseSpecializedDecodable for &'a [T] {}

@@ -13,6 +13,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::cmp::{PartialOrd, Ord, Ordering};
 
+use lazy_static::lazy_static;
+
 use crate::builder::Step;
 
 pub struct Interned<T>(usize, PhantomData<*const T>);
@@ -68,20 +70,20 @@ unsafe impl<T> Send for Interned<T> {}
 unsafe impl<T> Sync for Interned<T> {}
 
 impl fmt::Display for Interned<String> {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let s: &str = &*self;
         f.write_str(s)
     }
 }
 
 impl fmt::Debug for Interned<String> {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let s: &str = &*self;
         f.write_fmt(format_args!("{:?}", s))
     }
 }
 impl fmt::Debug for Interned<PathBuf> {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let s: &Path = &*self;
         f.write_fmt(format_args!("{:?}", s))
     }
@@ -227,10 +229,10 @@ lazy_static! {
     pub static ref INTERNER: Interner = Interner::default();
 }
 
-/// This is essentially a HashMap which allows storing any type in its input and
+/// This is essentially a `HashMap` which allows storing any type in its input and
 /// any type in its output. It is a write-once cache; values are never evicted,
 /// which means that references to the value can safely be returned from the
-/// get() method.
+/// `get()` method.
 #[derive(Debug)]
 pub struct Cache(
     RefCell<HashMap<

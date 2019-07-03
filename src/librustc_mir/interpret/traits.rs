@@ -1,11 +1,10 @@
-use rustc_data_structures::sync::Lrc;
-use rustc::ty::{self, Ty};
+use rustc::ty::{self, Ty, Instance};
 use rustc::ty::layout::{Size, Align, LayoutOf};
-use rustc::mir::interpret::{Scalar, Pointer, EvalResult, PointerArithmetic};
+use rustc::mir::interpret::{Scalar, Pointer, InterpResult, PointerArithmetic};
 
-use super::{EvalContext, Machine, MemoryKind};
+use super::{InterpretCx, InterpError, Machine, MemoryKind};
 
-impl<'a, 'mir, 'tcx, M: Machine<'a, 'mir, 'tcx>> EvalContext<'a, 'mir, 'tcx, M> {
+impl<'mir, 'tcx, M: Machine<'mir, 'tcx>> InterpretCx<'mir, 'tcx, M> {
     /// Creates a dynamic vtable for the given type and vtable origin. This is used only for
     /// objects.
     ///
@@ -16,13 +15,17 @@ impl<'a, 'mir, 'tcx, M: Machine<'a, 'mir, 'tcx>> EvalContext<'a, 'mir, 'tcx, M> 
         &mut self,
         ty: Ty<'tcx>,
         poly_trait_ref: Option<ty::PolyExistentialTraitRef<'tcx>>,
-    ) -> EvalResult<'tcx, Pointer<M::PointerTag>> {
+    ) -> InterpResult<'tcx, Pointer<M::PointerTag>> {
         trace!("get_vtable(trait_ref={:?})", poly_trait_ref);
 
         let (ty, poly_trait_ref) = self.tcx.erase_regions(&(ty, poly_trait_ref));
 
         if let Some(&vtable) = self.vtables.get(&(ty, poly_trait_ref)) {
-            return Ok(Pointer::from(vtable).with_default_tag());
+            // This means we guarantee that there are no duplicate vtables, we will
+            // always use the same vtable for the same (Type, Trait) combination.
+            // That's not what happens in rustc, but emulating per-crate deduplication
+            // does not sound like it actually makes anything any better.
+            return Ok(vtable);
         }
 
         let methods = if let Some(poly_trait_ref) = poly_trait_ref {
@@ -31,7 +34,7 @@ impl<'a, 'mir, 'tcx, M: Machine<'a, 'mir, 'tcx>> EvalContext<'a, 'mir, 'tcx, M> 
 
             self.tcx.vtable_methods(trait_ref)
         } else {
-            Lrc::new(Vec::new())
+            &[]
         };
 
         let layout = self.layout_of(ty)?;
@@ -49,11 +52,12 @@ impl<'a, 'mir, 'tcx, M: Machine<'a, 'mir, 'tcx>> EvalContext<'a, 'mir, 'tcx, M> 
             ptr_size * (3 + methods.len() as u64),
             ptr_align,
             MemoryKind::Vtable,
-        ).with_default_tag();
+        );
         let tcx = &*self.tcx;
 
-        let drop = ::monomorphize::resolve_drop_in_place(*tcx, ty);
-        let drop = self.memory.create_fn_alloc(drop).with_default_tag();
+        let drop = Instance::resolve_drop_in_place(*tcx, ty);
+        let drop = self.memory.create_fn_alloc(drop);
+
         // no need to do any alignment checks on the memory accesses below, because we know the
         // allocation is correctly aligned as we created it above. Also we're only offsetting by
         // multiples of `ptr_align`, which means that it will stay aligned to `ptr_align`.
@@ -72,8 +76,15 @@ impl<'a, 'mir, 'tcx, M: Machine<'a, 'mir, 'tcx>> EvalContext<'a, 'mir, 'tcx, M> 
 
         for (i, method) in methods.iter().enumerate() {
             if let Some((def_id, substs)) = *method {
-                let instance = self.resolve(def_id, substs)?;
-                let fn_ptr = self.memory.create_fn_alloc(instance).with_default_tag();
+                // resolve for vtable: insert shims where needed
+                let substs = self.subst_and_normalize_erasing_regions(substs)?;
+                let instance = ty::Instance::resolve_for_vtable(
+                    *self.tcx,
+                    self.param_env,
+                    def_id,
+                    substs,
+                ).ok_or_else(|| InterpError::TooGeneric)?;
+                let fn_ptr = self.memory.create_fn_alloc(instance);
                 let method_ptr = vtable.offset(ptr_size * (3 + i as u64), self)?;
                 self.memory
                     .get_mut(method_ptr.alloc_id)?
@@ -82,16 +93,16 @@ impl<'a, 'mir, 'tcx, M: Machine<'a, 'mir, 'tcx>> EvalContext<'a, 'mir, 'tcx, M> 
         }
 
         self.memory.mark_immutable(vtable.alloc_id)?;
-        assert!(self.vtables.insert((ty, poly_trait_ref), vtable.alloc_id).is_none());
+        assert!(self.vtables.insert((ty, poly_trait_ref), vtable).is_none());
 
         Ok(vtable)
     }
 
-    /// Return the drop fn instance as well as the actual dynamic type
+    /// Returns the drop fn instance as well as the actual dynamic type
     pub fn read_drop_type_from_vtable(
         &self,
         vtable: Pointer<M::PointerTag>,
-    ) -> EvalResult<'tcx, (ty::Instance<'tcx>, ty::Ty<'tcx>)> {
+    ) -> InterpResult<'tcx, (ty::Instance<'tcx>, Ty<'tcx>)> {
         // we don't care about the pointee type, we just want a pointer
         self.memory.check_align(vtable.into(), self.tcx.data_layout.pointer_align.abi)?;
         let drop_fn = self.memory
@@ -110,7 +121,7 @@ impl<'a, 'mir, 'tcx, M: Machine<'a, 'mir, 'tcx>> EvalContext<'a, 'mir, 'tcx, M> 
     pub fn read_size_and_align_from_vtable(
         &self,
         vtable: Pointer<M::PointerTag>,
-    ) -> EvalResult<'tcx, (Size, Align)> {
+    ) -> InterpResult<'tcx, (Size, Align)> {
         let pointer_size = self.pointer_size();
         self.memory.check_align(vtable.into(), self.tcx.data_layout.pointer_align.abi)?;
         let alloc = self.memory.get(vtable.alloc_id)?;

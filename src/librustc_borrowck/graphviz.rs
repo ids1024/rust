@@ -2,16 +2,15 @@
 //! libgraphviz traits, specialized to attaching borrowck analysis
 //! data to rendered labels.
 
-pub use self::Variant::*;
+pub use Variant::*;
 
 pub use rustc::cfg::graphviz::{Node, Edge};
 use rustc::cfg::graphviz as cfg_dot;
 
-use borrowck;
-use borrowck::{BorrowckCtxt, LoanPath};
-use dot;
+use crate::borrowck::{self, BorrowckCtxt, LoanPath};
+use crate::dataflow::{DataFlowOperator, DataFlowContext, EntryOrExit};
+use log::debug;
 use rustc::cfg::CFGIndex;
-use dataflow::{DataFlowOperator, DataFlowContext, EntryOrExit};
 use std::rc::Rc;
 
 #[derive(Debug, Copy, Clone)]
@@ -31,11 +30,11 @@ impl Variant {
     }
 }
 
-pub struct DataflowLabeller<'a, 'tcx: 'a> {
+pub struct DataflowLabeller<'a, 'tcx> {
     pub inner: cfg_dot::LabelledCFG<'a, 'tcx>,
     pub variants: Vec<Variant>,
     pub borrowck_ctxt: &'a BorrowckCtxt<'a, 'tcx>,
-    pub analysis_data: &'a borrowck::AnalysisData<'a, 'tcx>,
+    pub analysis_data: &'a borrowck::AnalysisData<'tcx>,
 }
 
 impl<'a, 'tcx> DataflowLabeller<'a, 'tcx> {
@@ -53,7 +52,7 @@ impl<'a, 'tcx> DataflowLabeller<'a, 'tcx> {
         sets
     }
 
-    fn dataflow_for_variant(&self, e: EntryOrExit, n: &Node, v: Variant) -> String {
+    fn dataflow_for_variant(&self, e: EntryOrExit, n: &Node<'_>, v: Variant) -> String {
         let cfgidx = n.0;
         match v {
             Loans   => self.dataflow_loans_for(e, cfgidx),
@@ -62,11 +61,14 @@ impl<'a, 'tcx> DataflowLabeller<'a, 'tcx> {
         }
     }
 
-    fn build_set<O:DataFlowOperator, F>(&self,
-                                        e: EntryOrExit,
-                                        cfgidx: CFGIndex,
-                                        dfcx: &DataFlowContext<'a, 'tcx, O>,
-                                        mut to_lp: F) -> String where
+    fn build_set<O: DataFlowOperator, F>(
+        &self,
+        e: EntryOrExit,
+        cfgidx: CFGIndex,
+        dfcx: &DataFlowContext<'tcx, O>,
+        mut to_lp: F,
+    ) -> String
+    where
         F: FnMut(usize) -> Rc<LoanPath<'tcx>>,
     {
         let mut saw_some = false;
@@ -89,7 +91,7 @@ impl<'a, 'tcx> DataflowLabeller<'a, 'tcx> {
         let dfcx = &self.analysis_data.loans;
         let loan_index_to_path = |loan_index| {
             let all_loans = &self.analysis_data.all_loans;
-            let l: &borrowck::Loan = &all_loans[loan_index];
+            let l: &borrowck::Loan<'_> = &all_loans[loan_index];
             l.loan_path()
         };
         self.build_set(e, cfgidx, dfcx, loan_index_to_path)

@@ -1,15 +1,9 @@
 #![feature(nll)]
 #![feature(rustc_private)]
 
-#[macro_use] extern crate log;
-extern crate rustc;
-extern crate rustc_data_structures;
-extern crate rustc_errors;
-extern crate rustc_target;
-extern crate syntax;
-extern crate syntax_pos;
-#[macro_use]
-extern crate smallvec;
+#![deny(rust_2018_idioms)]
+#![deny(internal)]
+#![deny(unused_lifetimes)]
 
 pub mod expand;
 

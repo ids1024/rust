@@ -1,8 +1,7 @@
-use boxed::FnBox;
-use ffi::CStr;
-use io;
-use sys::{unsupported, Void};
-use time::Duration;
+use crate::ffi::CStr;
+use crate::io;
+use crate::sys::{unsupported, Void};
+use crate::time::Duration;
 
 pub struct Thread(Void);
 
@@ -10,7 +9,7 @@ pub const DEFAULT_MIN_STACK_SIZE: usize = 4096;
 
 impl Thread {
     // unsafe: see thread::Builder::spawn_unchecked for safety requirements
-    pub unsafe fn new(_stack: usize, _p: Box<dyn FnBox()>)
+    pub unsafe fn new(_stack: usize, _p: Box<dyn FnOnce()>)
         -> io::Result<Thread>
     {
         unsupported()
@@ -31,8 +30,8 @@ impl Thread {
 
     #[cfg(target_feature = "atomics")]
     pub fn sleep(dur: Duration) {
-        use arch::wasm32;
-        use cmp;
+        use crate::arch::wasm32;
+        use crate::cmp;
 
         // Use an atomic wait to block the current thread artificially with a
         // timeout listed. Note that we should never be notified (return value
@@ -60,7 +59,7 @@ pub mod guard {
     pub unsafe fn init() -> Option<Guard> { None }
 }
 
-cfg_if! {
+cfg_if::cfg_if! {
     if #[cfg(all(target_feature = "atomics", feature = "wasm-bindgen-threads"))] {
         #[link(wasm_import_module = "__wbindgen_thread_xform__")]
         extern {
@@ -76,7 +75,7 @@ cfg_if! {
         // you'd like to use them be sure to update that and make sure everyone
         // agrees what's what.
         pub fn tcb_get() -> *mut u8 {
-            use mem;
+            use crate::mem;
             assert_eq!(mem::size_of::<*mut u8>(), mem::size_of::<u32>());
             unsafe { __wbindgen_tcb_get() as *mut u8 }
         }

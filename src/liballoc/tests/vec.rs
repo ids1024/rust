@@ -8,7 +8,7 @@ struct DropCounter<'a> {
     count: &'a mut u32,
 }
 
-impl<'a> Drop for DropCounter<'a> {
+impl Drop for DropCounter<'_> {
     fn drop(&mut self) {
         *self.count += 1;
     }
@@ -638,7 +638,7 @@ fn test_splice_unbounded() {
 fn test_splice_forget() {
     let mut v = vec![1, 2, 3, 4, 5];
     let a = [10, 11, 12];
-    ::std::mem::forget(v.splice(2..4, a.iter().cloned()));
+    std::mem::forget(v.splice(2..4, a.iter().cloned()));
     assert_eq!(v, &[1, 2]);
 }
 
@@ -761,6 +761,7 @@ fn from_into_inner() {
     it.next().unwrap();
     let vec = it.collect::<Vec<_>>();
     assert_eq!(vec, [2, 3]);
+    #[cfg(not(miri))] // Miri does not support comparing dangling pointers
     assert!(ptr != vec.as_ptr());
 }
 
@@ -969,6 +970,7 @@ fn test_reserve_exact() {
 }
 
 #[test]
+#[cfg(not(miri))] // Miri does not support signalling OOM
 fn test_try_reserve() {
 
     // These are the interesting cases:
@@ -1071,6 +1073,7 @@ fn test_try_reserve() {
 }
 
 #[test]
+#[cfg(not(miri))] // Miri does not support signalling OOM
 fn test_try_reserve_exact() {
 
     // This is exactly the same as test_try_reserve with the method changed.
@@ -1148,4 +1151,25 @@ fn test_try_reserve_exact() {
         } else { panic!("usize::MAX should trigger an overflow!") }
     }
 
+}
+
+#[test]
+fn test_stable_push_pop() {
+    // Test that, if we reserved enough space, adding and removing elements does not
+    // invalidate references into the vector (such as `v0`).  This test also
+    // runs in Miri, which would detect such problems.
+    let mut v = Vec::with_capacity(10);
+    v.push(13);
+
+    // laundering the lifetime -- we take care that `v` does not reallocate, so that's okay.
+    let v0 = unsafe { &*(&v[0] as *const _) };
+
+    // Now do a bunch of things and occasionally use `v0` again to assert it is still valid.
+    v.push(1);
+    v.push(2);
+    v.insert(1, 1);
+    assert_eq!(*v0, 13);
+    v.remove(1);
+    v.pop().unwrap();
+    assert_eq!(*v0, 13);
 }

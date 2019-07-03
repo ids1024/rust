@@ -1,6 +1,6 @@
-use infer::canonical::{Canonical, Canonicalized, CanonicalizedQueryResponse, QueryResponse};
-use traits::query::Fallible;
-use ty::{ParamEnvAnd, Predicate, TyCtxt};
+use crate::infer::canonical::{Canonical, Canonicalized, CanonicalizedQueryResponse, QueryResponse};
+use crate::traits::query::Fallible;
+use crate::ty::{ParamEnvAnd, Predicate, TyCtxt};
 
 #[derive(Copy, Clone, Debug, Hash, PartialEq, Eq)]
 pub struct ProvePredicate<'tcx> {
@@ -13,11 +13,11 @@ impl<'tcx> ProvePredicate<'tcx> {
     }
 }
 
-impl<'gcx: 'tcx, 'tcx> super::QueryTypeOp<'gcx, 'tcx> for ProvePredicate<'tcx> {
+impl<'tcx> super::QueryTypeOp<'tcx> for ProvePredicate<'tcx> {
     type QueryResponse = ();
 
     fn try_fast_path(
-        tcx: TyCtxt<'_, 'gcx, 'tcx>,
+        tcx: TyCtxt<'tcx>,
         key: &ParamEnvAnd<'tcx, Self>,
     ) -> Option<Self::QueryResponse> {
         // Proving Sized, very often on "obviously sized" types like
@@ -38,14 +38,14 @@ impl<'gcx: 'tcx, 'tcx> super::QueryTypeOp<'gcx, 'tcx> for ProvePredicate<'tcx> {
     }
 
     fn perform_query(
-        tcx: TyCtxt<'_, 'gcx, 'tcx>,
-        canonicalized: Canonicalized<'gcx, ParamEnvAnd<'tcx, Self>>,
-    ) -> Fallible<CanonicalizedQueryResponse<'gcx, ()>> {
+        tcx: TyCtxt<'tcx>,
+        canonicalized: Canonicalized<'tcx, ParamEnvAnd<'tcx, Self>>,
+    ) -> Fallible<CanonicalizedQueryResponse<'tcx, ()>> {
         tcx.type_op_prove_predicate(canonicalized)
     }
 
     fn shrink_to_tcx_lifetime(
-        v: &'a CanonicalizedQueryResponse<'gcx, ()>,
+        v: &'a CanonicalizedQueryResponse<'tcx, ()>,
     ) -> &'a Canonical<'tcx, QueryResponse<'tcx, ()>> {
         v
     }

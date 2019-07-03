@@ -1,11 +1,11 @@
-use build::Builder;
-use build::matches::MatchPair;
-use hair::*;
+use crate::build::Builder;
+use crate::build::matches::MatchPair;
+use crate::hair::*;
 use rustc::mir::*;
 use std::u32;
 use std::convert::TryInto;
 
-impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
+impl<'a, 'tcx> Builder<'a, 'tcx> {
     pub fn field_match_pairs<'pat>(&mut self,
                                    place: Place<'tcx>,
                                    subpatterns: &'pat [FieldPattern<'tcx>])
@@ -13,7 +13,7 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
         subpatterns.iter()
                    .map(|fieldpat| {
                        let place = place.clone().field(fieldpat.field,
-                                                         fieldpat.pattern.ty);
+                                                       fieldpat.pattern.ty);
                        MatchPair::new(place, &fieldpat.pattern)
                    })
                    .collect()
@@ -65,6 +65,39 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
                   })
         );
     }
+
+    /// Creates a false edge to `imaginary_target` and a real edge to
+    /// real_target. If `imaginary_target` is none, or is the same as the real
+    /// target, a Goto is generated instead to simplify the generated MIR.
+    pub fn false_edges(
+        &mut self,
+        from_block: BasicBlock,
+        real_target: BasicBlock,
+        imaginary_target: Option<BasicBlock>,
+        source_info: SourceInfo,
+    )  {
+        match imaginary_target {
+            Some(target) if target != real_target => {
+                self.cfg.terminate(
+                    from_block,
+                    source_info,
+                    TerminatorKind::FalseEdges {
+                        real_target,
+                        imaginary_target: target,
+                    },
+                );
+            }
+            _ => {
+                self.cfg.terminate(
+                    from_block,
+                    source_info,
+                    TerminatorKind::Goto {
+                        target: real_target
+                    }
+                );
+            }
+        }
+    }
 }
 
 impl<'pat, 'tcx> MatchPair<'pat, 'tcx> {
@@ -72,7 +105,6 @@ impl<'pat, 'tcx> MatchPair<'pat, 'tcx> {
         MatchPair {
             place,
             pattern,
-            slice_len_checked: false,
         }
     }
 }

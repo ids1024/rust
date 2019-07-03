@@ -6,15 +6,16 @@
 // The functionality in here is shared between persisting to crate metadata and
 // persisting to incr. comp. caches.
 
-use hir::def_id::{DefId, CrateNum};
-use infer::canonical::{CanonicalVarInfo, CanonicalVarInfos};
+use crate::arena::ArenaAllocatable;
+use crate::hir::def_id::{DefId, CrateNum};
+use crate::infer::canonical::{CanonicalVarInfo, CanonicalVarInfos};
 use rustc_data_structures::fx::FxHashMap;
-use rustc_serialize::{Decodable, Decoder, Encoder, Encodable, opaque};
+use crate::rustc_serialize::{Decodable, Decoder, Encoder, Encodable, opaque};
 use std::hash::Hash;
 use std::intrinsics;
-use ty::{self, Ty, TyCtxt};
-use ty::subst::Substs;
-use mir::interpret::Allocation;
+use crate::ty::{self, Ty, TyCtxt};
+use crate::ty::subst::SubstsRef;
+use crate::mir::interpret::Allocation;
 
 /// The shorthand encoding uses an enum's variant index `usize`
 /// and is offset by this value so it never matches a real variant.
@@ -106,9 +107,8 @@ pub fn encode_predicates<'tcx, E, C>(encoder: &mut E,
     Ok(())
 }
 
-pub trait TyDecoder<'a, 'tcx: 'a>: Decoder {
-
-    fn tcx(&self) -> TyCtxt<'a, 'tcx, 'tcx>;
+pub trait TyDecoder<'tcx>: Decoder {
+    fn tcx(&self) -> TyCtxt<'tcx>;
 
     fn peek_byte(&self) -> u8;
 
@@ -131,18 +131,38 @@ pub trait TyDecoder<'a, 'tcx: 'a>: Decoder {
 }
 
 #[inline]
-pub fn decode_cnum<'a, 'tcx, D>(decoder: &mut D) -> Result<CrateNum, D::Error>
-    where D: TyDecoder<'a, 'tcx>,
-          'tcx: 'a,
+pub fn decode_arena_allocable<D, T: ArenaAllocatable + Decodable>(
+    decoder: &mut D,
+) -> Result<&'tcx T, D::Error>
+where
+    D: TyDecoder<'tcx>,
+{
+    Ok(decoder.tcx().arena.alloc(Decodable::decode(decoder)?))
+}
+
+#[inline]
+pub fn decode_arena_allocable_slice<D, T: ArenaAllocatable + Decodable>(
+    decoder: &mut D,
+) -> Result<&'tcx [T], D::Error>
+where
+    D: TyDecoder<'tcx>,
+{
+    Ok(decoder.tcx().arena.alloc_from_iter(<Vec<T> as Decodable>::decode(decoder)?))
+}
+
+#[inline]
+pub fn decode_cnum<D>(decoder: &mut D) -> Result<CrateNum, D::Error>
+where
+    D: TyDecoder<'tcx>,
 {
     let cnum = CrateNum::from_u32(u32::decode(decoder)?);
     Ok(decoder.map_encoded_cnum_to_current(cnum))
 }
 
 #[inline]
-pub fn decode_ty<'a, 'tcx, D>(decoder: &mut D) -> Result<Ty<'tcx>, D::Error>
-    where D: TyDecoder<'a, 'tcx>,
-          'tcx: 'a,
+pub fn decode_ty<D>(decoder: &mut D) -> Result<Ty<'tcx>, D::Error>
+where
+    D: TyDecoder<'tcx>,
 {
     // Handle shorthands first, if we have an usize > 0x80.
     if decoder.positioned_at_shorthand() {
@@ -160,10 +180,9 @@ pub fn decode_ty<'a, 'tcx, D>(decoder: &mut D) -> Result<Ty<'tcx>, D::Error>
 }
 
 #[inline]
-pub fn decode_predicates<'a, 'tcx, D>(decoder: &mut D)
-                                      -> Result<ty::GenericPredicates<'tcx>, D::Error>
-    where D: TyDecoder<'a, 'tcx>,
-          'tcx: 'a,
+pub fn decode_predicates<D>(decoder: &mut D) -> Result<ty::GenericPredicates<'tcx>, D::Error>
+where
+    D: TyDecoder<'tcx>,
 {
     Ok(ty::GenericPredicates {
         parent: Decodable::decode(decoder)?,
@@ -185,9 +204,9 @@ pub fn decode_predicates<'a, 'tcx, D>(decoder: &mut D)
 }
 
 #[inline]
-pub fn decode_substs<'a, 'tcx, D>(decoder: &mut D) -> Result<&'tcx Substs<'tcx>, D::Error>
-    where D: TyDecoder<'a, 'tcx>,
-          'tcx: 'a,
+pub fn decode_substs<D>(decoder: &mut D) -> Result<SubstsRef<'tcx>, D::Error>
+where
+    D: TyDecoder<'tcx>,
 {
     let len = decoder.read_usize()?;
     let tcx = decoder.tcx();
@@ -195,38 +214,37 @@ pub fn decode_substs<'a, 'tcx, D>(decoder: &mut D) -> Result<&'tcx Substs<'tcx>,
 }
 
 #[inline]
-pub fn decode_region<'a, 'tcx, D>(decoder: &mut D) -> Result<ty::Region<'tcx>, D::Error>
-    where D: TyDecoder<'a, 'tcx>,
-          'tcx: 'a,
+pub fn decode_region<D>(decoder: &mut D) -> Result<ty::Region<'tcx>, D::Error>
+where
+    D: TyDecoder<'tcx>,
 {
     Ok(decoder.tcx().mk_region(Decodable::decode(decoder)?))
 }
 
 #[inline]
-pub fn decode_ty_slice<'a, 'tcx, D>(decoder: &mut D)
-                                    -> Result<&'tcx ty::List<Ty<'tcx>>, D::Error>
-    where D: TyDecoder<'a, 'tcx>,
-          'tcx: 'a,
+pub fn decode_ty_slice<D>(decoder: &mut D) -> Result<&'tcx ty::List<Ty<'tcx>>, D::Error>
+where
+    D: TyDecoder<'tcx>,
 {
     let len = decoder.read_usize()?;
     Ok(decoder.tcx().mk_type_list((0..len).map(|_| Decodable::decode(decoder)))?)
 }
 
 #[inline]
-pub fn decode_adt_def<'a, 'tcx, D>(decoder: &mut D)
-                                   -> Result<&'tcx ty::AdtDef, D::Error>
-    where D: TyDecoder<'a, 'tcx>,
-          'tcx: 'a,
+pub fn decode_adt_def<D>(decoder: &mut D) -> Result<&'tcx ty::AdtDef, D::Error>
+where
+    D: TyDecoder<'tcx>,
 {
     let def_id = DefId::decode(decoder)?;
     Ok(decoder.tcx().adt_def(def_id))
 }
 
 #[inline]
-pub fn decode_existential_predicate_slice<'a, 'tcx, D>(decoder: &mut D)
-    -> Result<&'tcx ty::List<ty::ExistentialPredicate<'tcx>>, D::Error>
-    where D: TyDecoder<'a, 'tcx>,
-          'tcx: 'a,
+pub fn decode_existential_predicate_slice<D>(
+    decoder: &mut D,
+) -> Result<&'tcx ty::List<ty::ExistentialPredicate<'tcx>>, D::Error>
+where
+    D: TyDecoder<'tcx>,
 {
     let len = decoder.read_usize()?;
     Ok(decoder.tcx()
@@ -234,10 +252,9 @@ pub fn decode_existential_predicate_slice<'a, 'tcx, D>(decoder: &mut D)
 }
 
 #[inline]
-pub fn decode_canonical_var_infos<'a, 'tcx, D>(decoder: &mut D)
-    -> Result<CanonicalVarInfos<'tcx>, D::Error>
-    where D: TyDecoder<'a, 'tcx>,
-          'tcx: 'a,
+pub fn decode_canonical_var_infos<D>(decoder: &mut D) -> Result<CanonicalVarInfos<'tcx>, D::Error>
+where
+    D: TyDecoder<'tcx>,
 {
     let len = decoder.read_usize()?;
     let interned: Result<Vec<CanonicalVarInfo>, _> = (0..len).map(|_| Decodable::decode(decoder))
@@ -247,19 +264,17 @@ pub fn decode_canonical_var_infos<'a, 'tcx, D>(decoder: &mut D)
 }
 
 #[inline]
-pub fn decode_lazy_const<'a, 'tcx, D>(decoder: &mut D)
-                                 -> Result<&'tcx ty::LazyConst<'tcx>, D::Error>
-    where D: TyDecoder<'a, 'tcx>,
-          'tcx: 'a,
+pub fn decode_const<D>(decoder: &mut D) -> Result<&'tcx ty::Const<'tcx>, D::Error>
+where
+    D: TyDecoder<'tcx>,
 {
-    Ok(decoder.tcx().intern_lazy_const(Decodable::decode(decoder)?))
+    Ok(decoder.tcx().mk_const(Decodable::decode(decoder)?))
 }
 
 #[inline]
-pub fn decode_allocation<'a, 'tcx, D>(decoder: &mut D)
-    -> Result<&'tcx Allocation, D::Error>
-    where D: TyDecoder<'a, 'tcx>,
-          'tcx: 'a,
+pub fn decode_allocation<D>(decoder: &mut D) -> Result<&'tcx Allocation, D::Error>
+where
+    D: TyDecoder<'tcx>,
 {
     Ok(decoder.tcx().intern_const_alloc(Decodable::decode(decoder)?))
 }
@@ -274,6 +289,39 @@ macro_rules! __impl_decoder_methods {
 }
 
 #[macro_export]
+macro_rules! impl_arena_allocatable_decoder {
+    ([]$args:tt) => {};
+    ([decode $(, $attrs:ident)*]
+     [[$DecoderName:ident [$($typaram:tt),*]], [$name:ident: $ty:ty], $tcx:lifetime]) => {
+        impl<$($typaram),*> SpecializedDecoder<&$tcx $ty> for $DecoderName<$($typaram),*> {
+            #[inline]
+            fn specialized_decode(&mut self) -> Result<&$tcx $ty, Self::Error> {
+                decode_arena_allocable(self)
+            }
+        }
+
+        impl<$($typaram),*> SpecializedDecoder<&$tcx [$ty]> for $DecoderName<$($typaram),*> {
+            #[inline]
+            fn specialized_decode(&mut self) -> Result<&$tcx [$ty], Self::Error> {
+                decode_arena_allocable_slice(self)
+            }
+        }
+    };
+    ([$ignore:ident $(, $attrs:ident)*]$args:tt) => {
+        impl_arena_allocatable_decoder!([$($attrs),*]$args);
+    };
+}
+
+#[macro_export]
+macro_rules! impl_arena_allocatable_decoders {
+    ($args:tt, [$($a:tt $name:ident: $ty:ty,)*], $tcx:lifetime) => {
+        $(
+            impl_arena_allocatable_decoder!($a [$args, [$name: $ty], $tcx]);
+        )*
+    }
+}
+
+#[macro_export]
 macro_rules! implement_ty_decoder {
     ($DecoderName:ident <$($typaram:tt),*>) => {
         mod __ty_decoder_impl {
@@ -281,9 +329,9 @@ macro_rules! implement_ty_decoder {
             use $crate::infer::canonical::CanonicalVarInfos;
             use $crate::ty;
             use $crate::ty::codec::*;
-            use $crate::ty::subst::Substs;
+            use $crate::ty::subst::SubstsRef;
             use $crate::hir::def_id::{CrateNum};
-            use rustc_serialize::{Decoder, SpecializedDecoder};
+            use crate::rustc_serialize::{Decoder, SpecializedDecoder};
             use std::borrow::Cow;
 
             impl<$($typaram ),*> Decoder for $DecoderName<$($typaram),*> {
@@ -322,6 +370,8 @@ macro_rules! implement_ty_decoder {
             // the caller to pick any lifetime for 'tcx, including 'static,
             // by using the unspecialized proxies to them.
 
+            arena_types!(impl_arena_allocatable_decoders, [$DecoderName [$($typaram),*]], 'tcx);
+
             impl<$($typaram),*> SpecializedDecoder<CrateNum>
             for $DecoderName<$($typaram),*> {
                 fn specialized_decode(&mut self) -> Result<CrateNum, Self::Error> {
@@ -344,9 +394,9 @@ macro_rules! implement_ty_decoder {
                 }
             }
 
-            impl<$($typaram),*> SpecializedDecoder<&'tcx Substs<'tcx>>
+            impl<$($typaram),*> SpecializedDecoder<SubstsRef<'tcx>>
             for $DecoderName<$($typaram),*> {
-                fn specialized_decode(&mut self) -> Result<&'tcx Substs<'tcx>, Self::Error> {
+                fn specialized_decode(&mut self) -> Result<SubstsRef<'tcx>, Self::Error> {
                     decode_substs(self)
                 }
             }
@@ -389,10 +439,10 @@ macro_rules! implement_ty_decoder {
                 }
             }
 
-            impl<$($typaram),*> SpecializedDecoder<&'tcx $crate::ty::LazyConst<'tcx>>
+            impl<$($typaram),*> SpecializedDecoder<&'tcx $crate::ty::Const<'tcx>>
             for $DecoderName<$($typaram),*> {
-                fn specialized_decode(&mut self) -> Result<&'tcx ty::LazyConst<'tcx>, Self::Error> {
-                    decode_lazy_const(self)
+                fn specialized_decode(&mut self) -> Result<&'tcx ty::Const<'tcx>, Self::Error> {
+                    decode_const(self)
                 }
             }
 

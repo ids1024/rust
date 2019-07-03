@@ -1,8 +1,8 @@
-use borrow_check::nll::constraints::OutlivesConstraint;
-use borrow_check::nll::region_infer::TypeTest;
-use borrow_check::nll::type_check::{Locations, MirTypeckRegionConstraints};
-use borrow_check::nll::universal_regions::UniversalRegions;
-use borrow_check::nll::ToRegionVid;
+use crate::borrow_check::nll::constraints::OutlivesConstraint;
+use crate::borrow_check::nll::region_infer::TypeTest;
+use crate::borrow_check::nll::type_check::{Locations, MirTypeckRegionConstraints};
+use crate::borrow_check::nll::universal_regions::UniversalRegions;
+use crate::borrow_check::nll::ToRegionVid;
 use rustc::infer::canonical::QueryRegionConstraint;
 use rustc::infer::outlives::env::RegionBoundPairs;
 use rustc::infer::outlives::obligations::{TypeOutlives, TypeOutlivesDelegate};
@@ -13,9 +13,9 @@ use rustc::ty::subst::UnpackedKind;
 use rustc::ty::{self, TyCtxt};
 use syntax_pos::DUMMY_SP;
 
-crate struct ConstraintConversion<'a, 'gcx: 'tcx, 'tcx: 'a> {
-    infcx: &'a InferCtxt<'a, 'gcx, 'tcx>,
-    tcx: TyCtxt<'a, 'gcx, 'tcx>,
+crate struct ConstraintConversion<'a, 'tcx> {
+    infcx: &'a InferCtxt<'a, 'tcx>,
+    tcx: TyCtxt<'tcx>,
     universal_regions: &'a UniversalRegions<'tcx>,
     region_bound_pairs: &'a RegionBoundPairs<'tcx>,
     implicit_region_bound: Option<ty::Region<'tcx>>,
@@ -25,9 +25,9 @@ crate struct ConstraintConversion<'a, 'gcx: 'tcx, 'tcx: 'a> {
     constraints: &'a mut MirTypeckRegionConstraints<'tcx>,
 }
 
-impl<'a, 'gcx, 'tcx> ConstraintConversion<'a, 'gcx, 'tcx> {
+impl<'a, 'tcx> ConstraintConversion<'a, 'tcx> {
     crate fn new(
-        infcx: &'a InferCtxt<'a, 'gcx, 'tcx>,
+        infcx: &'a InferCtxt<'a, 'tcx>,
         universal_regions: &'a UniversalRegions<'tcx>,
         region_bound_pairs: &'a RegionBoundPairs<'tcx>,
         implicit_region_bound: Option<ty::Region<'tcx>>,
@@ -99,6 +99,11 @@ impl<'a, 'gcx, 'tcx> ConstraintConversion<'a, 'gcx, 'tcx> {
                     param_env,
                 ).type_must_outlive(origin, t1, r2);
             }
+
+            UnpackedKind::Const(_) => {
+                // Consts cannot outlive one another, so we
+                // don't need to handle any relations here.
+            }
         }
     }
 
@@ -145,9 +150,7 @@ impl<'a, 'gcx, 'tcx> ConstraintConversion<'a, 'gcx, 'tcx> {
     }
 }
 
-impl<'a, 'b, 'gcx, 'tcx> TypeOutlivesDelegate<'tcx>
-    for &'a mut ConstraintConversion<'b, 'gcx, 'tcx>
-{
+impl<'a, 'b, 'tcx> TypeOutlivesDelegate<'tcx> for &'a mut ConstraintConversion<'b, 'tcx> {
     fn push_sub_region_constraint(
         &mut self,
         _origin: SubregionOrigin<'tcx>,

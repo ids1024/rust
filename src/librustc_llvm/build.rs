@@ -1,6 +1,3 @@
-extern crate cc;
-extern crate build_helper;
-
 use std::process::Command;
 use std::env;
 use std::path::{PathBuf, Path};
@@ -23,6 +20,8 @@ fn main() {
         println!("cargo:rerun-if-env-changed=RUST_CHECK");
         return;
     }
+
+    build_helper::restore_library_path();
 
     let target = env::var("TARGET").expect("TARGET was not set");
     let llvm_config = env::var_os("LLVM_CONFIG")
@@ -232,6 +231,21 @@ fn main() {
             println!("cargo:rustc-link-lib={}", &lib[2..]);
         } else if lib.starts_with("-L") {
             println!("cargo:rustc-link-search=native={}", &lib[2..]);
+        }
+    }
+
+    // Some LLVM linker flags (-L and -l) may be needed even when linking
+    // librustc_llvm, for example when using static libc++, we may need to
+    // manually specify the library search path and -ldl -lpthread as link
+    // dependencies.
+    let llvm_linker_flags = env::var_os("LLVM_LINKER_FLAGS");
+    if let Some(s) = llvm_linker_flags {
+        for lib in s.into_string().unwrap().split_whitespace() {
+            if lib.starts_with("-l") {
+                println!("cargo:rustc-link-lib={}", &lib[2..]);
+            } else if lib.starts_with("-L") {
+                println!("cargo:rustc-link-search=native={}", &lib[2..]);
+            }
         }
     }
 

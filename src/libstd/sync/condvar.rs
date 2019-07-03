@@ -1,10 +1,10 @@
-use fmt;
-use sync::atomic::{AtomicUsize, Ordering};
-use sync::{mutex, MutexGuard, PoisonError};
-use sys_common::condvar as sys;
-use sys_common::mutex as sys_mutex;
-use sys_common::poison::{self, LockResult};
-use time::{Duration, Instant};
+use crate::fmt;
+use crate::sync::atomic::{AtomicUsize, Ordering};
+use crate::sync::{mutex, MutexGuard, PoisonError};
+use crate::sys_common::condvar as sys;
+use crate::sys_common::mutex as sys_mutex;
+use crate::sys_common::poison::{self, LockResult};
+use crate::time::{Duration, Instant};
 
 /// A type indicating whether a timed wait on a condition variable returned
 /// due to a time out or not.
@@ -17,7 +17,7 @@ use time::{Duration, Instant};
 pub struct WaitTimeoutResult(bool);
 
 impl WaitTimeoutResult {
-    /// Returns whether the wait was known to have timed out.
+    /// Returns `true` if the wait was known to have timed out.
     ///
     /// # Examples
     ///
@@ -190,7 +190,7 @@ impl Condvar {
     /// // Wait for the thread to start up.
     /// let &(ref lock, ref cvar) = &*pair;
     /// let mut started = lock.lock().unwrap();
-    /// // As long as the value inside the `Mutex` is false, we wait.
+    /// // As long as the value inside the `Mutex<bool>` is `false`, we wait.
     /// while !*started {
     ///     started = cvar.wait(started).unwrap();
     /// }
@@ -254,7 +254,7 @@ impl Condvar {
     ///
     /// // Wait for the thread to start up.
     /// let &(ref lock, ref cvar) = &*pair;
-    /// // As long as the value inside the `Mutex` is false, we wait.
+    /// // As long as the value inside the `Mutex<bool>` is `false`, we wait.
     /// let _guard = cvar.wait_until(lock.lock().unwrap(), |started| { *started }).unwrap();
     /// ```
     #[unstable(feature = "wait_until", issue = "47960")]
@@ -311,7 +311,7 @@ impl Condvar {
     /// // Wait for the thread to start up.
     /// let &(ref lock, ref cvar) = &*pair;
     /// let mut started = lock.lock().unwrap();
-    /// // As long as the value inside the `Mutex` is false, we wait.
+    /// // As long as the value inside the `Mutex<bool>` is `false`, we wait.
     /// loop {
     ///     let result = cvar.wait_timeout_ms(started, 10).unwrap();
     ///     // 10 milliseconds have passed, or maybe the value changed!
@@ -343,13 +343,13 @@ impl Condvar {
     ///
     /// Note that the best effort is made to ensure that the time waited is
     /// measured with a monotonic clock, and not affected by the changes made to
-    /// the system time.  This function is susceptible to spurious wakeups.
+    /// the system time. This function is susceptible to spurious wakeups.
     /// Condition variables normally have a boolean predicate associated with
     /// them, and the predicate must always be checked each time this function
-    /// returns to protect against spurious wakeups.  Additionally, it is
+    /// returns to protect against spurious wakeups. Additionally, it is
     /// typically desirable for the time-out to not exceed some duration in
     /// spite of spurious wakes, thus the sleep-duration is decremented by the
-    /// amount slept.  Alternatively, use the `wait_timeout_until` method
+    /// amount slept. Alternatively, use the `wait_timeout_until` method
     /// to wait until a condition is met with a total time-out regardless
     /// of spurious wakes.
     ///
@@ -384,7 +384,7 @@ impl Condvar {
     /// // wait for the thread to start up
     /// let &(ref lock, ref cvar) = &*pair;
     /// let mut started = lock.lock().unwrap();
-    /// // as long as the value inside the `Mutex` is false, we wait
+    /// // as long as the value inside the `Mutex<bool>` is `false`, we wait
     /// loop {
     ///     let result = cvar.wait_timeout(started, Duration::from_millis(10)).unwrap();
     ///     // 10 milliseconds have passed, or maybe the value changed!
@@ -413,7 +413,7 @@ impl Condvar {
     }
 
     /// Waits on this condition variable for a notification, timing out after a
-    /// specified duration.  Spurious wakes will not cause this function to
+    /// specified duration. Spurious wakes will not cause this function to
     /// return.
     ///
     /// The semantics of this function are equivalent to [`wait_until`] except
@@ -518,7 +518,7 @@ impl Condvar {
     /// // Wait for the thread to start up.
     /// let &(ref lock, ref cvar) = &*pair;
     /// let mut started = lock.lock().unwrap();
-    /// // As long as the value inside the `Mutex` is false, we wait.
+    /// // As long as the value inside the `Mutex<bool>` is `false`, we wait.
     /// while !*started {
     ///     started = cvar.wait(started).unwrap();
     /// }
@@ -558,7 +558,7 @@ impl Condvar {
     /// // Wait for the thread to start up.
     /// let &(ref lock, ref cvar) = &*pair;
     /// let mut started = lock.lock().unwrap();
-    /// // As long as the value inside the `Mutex` is false, we wait.
+    /// // As long as the value inside the `Mutex<bool>` is `false`, we wait.
     /// while !*started {
     ///     started = cvar.wait(started).unwrap();
     /// }
@@ -589,7 +589,7 @@ impl Condvar {
 
 #[stable(feature = "std_debug", since = "1.16.0")]
 impl fmt::Debug for Condvar {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.pad("Condvar { .. }")
     }
 }
@@ -612,12 +612,12 @@ impl Drop for Condvar {
 #[cfg(test)]
 mod tests {
     /// #![feature(wait_until)]
-    use sync::mpsc::channel;
-    use sync::{Condvar, Mutex, Arc};
-    use sync::atomic::{AtomicBool, Ordering};
-    use thread;
-    use time::Duration;
-    use u64;
+    use crate::sync::mpsc::channel;
+    use crate::sync::{Condvar, Mutex, Arc};
+    use crate::sync::atomic::{AtomicBool, Ordering};
+    use crate::thread;
+    use crate::time::Duration;
+    use crate::u64;
 
     #[test]
     fn smoke() {
@@ -705,6 +705,7 @@ mod tests {
 
     #[test]
     #[cfg_attr(target_os = "emscripten", ignore)]
+    #[cfg_attr(target_env = "sgx", ignore)] // FIXME: https://github.com/fortanix/rust-sgx/issues/31
     fn wait_timeout_wait() {
         let m = Arc::new(Mutex::new(()));
         let c = Arc::new(Condvar::new());
@@ -724,6 +725,7 @@ mod tests {
 
     #[test]
     #[cfg_attr(target_os = "emscripten", ignore)]
+    #[cfg_attr(target_env = "sgx", ignore)] // FIXME: https://github.com/fortanix/rust-sgx/issues/31
     fn wait_timeout_until_wait() {
         let m = Arc::new(Mutex::new(()));
         let c = Arc::new(Condvar::new());
@@ -748,6 +750,7 @@ mod tests {
 
     #[test]
     #[cfg_attr(target_os = "emscripten", ignore)]
+    #[cfg_attr(target_env = "sgx", ignore)] // FIXME: https://github.com/fortanix/rust-sgx/issues/31
     fn wait_timeout_until_wake() {
         let pair = Arc::new((Mutex::new(false), Condvar::new()));
         let pair_copy = pair.clone();
@@ -771,6 +774,7 @@ mod tests {
 
     #[test]
     #[cfg_attr(target_os = "emscripten", ignore)]
+    #[cfg_attr(target_env = "sgx", ignore)] // FIXME: https://github.com/fortanix/rust-sgx/issues/31
     fn wait_timeout_wake() {
         let m = Arc::new(Mutex::new(()));
         let c = Arc::new(Condvar::new());

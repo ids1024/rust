@@ -1,4 +1,4 @@
-use spec::{LinkerFlavor, Target, TargetOptions, TargetResult};
+use crate::spec::{LinkerFlavor, Target, TargetOptions, TargetResult};
 
 pub fn target() -> TargetResult {
     let base = super::linux_musl_base::opts();
@@ -22,6 +22,7 @@ pub fn target() -> TargetResult {
             // Atomic operations provided by compiler-builtins
             max_atomic_width: Some(32),
             abi_blacklist: super::arm_base::abi_blacklist(),
+            target_mcount: "\u{1}mcount".to_string(),
             .. base
         }
     })

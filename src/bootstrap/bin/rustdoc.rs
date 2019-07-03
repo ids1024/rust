@@ -4,8 +4,6 @@
 
 #![deny(warnings)]
 
-extern crate bootstrap;
-
 use std::env;
 use std::process::Command;
 use std::path::PathBuf;
@@ -16,6 +14,7 @@ fn main() {
     let libdir = env::var_os("RUSTDOC_LIBDIR").expect("RUSTDOC_LIBDIR was not set");
     let stage = env::var("RUSTC_STAGE").expect("RUSTC_STAGE was not set");
     let sysroot = env::var_os("RUSTC_SYSROOT").expect("RUSTC_SYSROOT was not set");
+    let mut has_unstable = false;
 
     use std::str::FromStr;
 
@@ -36,7 +35,7 @@ fn main() {
         .arg("--cfg")
         .arg("dox")
         .arg("--sysroot")
-        .arg(sysroot)
+        .arg(&sysroot)
         .env(bootstrap::util::dylib_path_var(),
              env::join_paths(&dylib_path).unwrap());
 
@@ -54,13 +53,43 @@ fn main() {
     // it up so we can make rustdoc print this into the docs
     if let Some(version) = env::var_os("RUSTDOC_CRATE_VERSION") {
         // This "unstable-options" can be removed when `--crate-version` is stabilized
-        cmd.arg("-Z")
-           .arg("unstable-options")
-           .arg("--crate-version").arg(version);
+        if !has_unstable {
+            cmd.arg("-Z")
+               .arg("unstable-options");
+        }
+        cmd.arg("--crate-version").arg(version);
+        has_unstable = true;
+    }
+
+    // Needed to be able to run all rustdoc tests.
+    if let Some(_) = env::var_os("RUSTDOC_GENERATE_REDIRECT_PAGES") {
+        // This "unstable-options" can be removed when `--generate-redirect-pages` is stabilized
+        if !has_unstable {
+            cmd.arg("-Z")
+               .arg("unstable-options");
+        }
+        cmd.arg("--generate-redirect-pages");
+        has_unstable = true;
+    }
+
+    // Needed to be able to run all rustdoc tests.
+    if let Some(ref x) = env::var_os("RUSTDOC_RESOURCE_SUFFIX") {
+        // This "unstable-options" can be removed when `--resource-suffix` is stabilized
+        if !has_unstable {
+            cmd.arg("-Z")
+               .arg("unstable-options");
+        }
+        cmd.arg("--resource-suffix").arg(x);
     }
 
     if verbose > 1 {
-        eprintln!("rustdoc command: {:?}", cmd);
+        eprintln!(
+            "rustdoc command: {:?}={:?} {:?}",
+            bootstrap::util::dylib_path_var(),
+            env::join_paths(&dylib_path).unwrap(),
+            cmd,
+        );
+        eprintln!("sysroot: {:?}", sysroot);
         eprintln!("libdir: {:?}", libdir);
     }
 

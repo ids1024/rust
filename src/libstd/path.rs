@@ -1,3 +1,5 @@
+// ignore-tidy-filelength
+
 //! Cross-platform path manipulation.
 //!
 //! This module provides two types, [`PathBuf`] and [`Path`][`Path`] (akin to [`String`]
@@ -67,23 +69,22 @@
 
 #![stable(feature = "rust1", since = "1.0.0")]
 
-use borrow::{Borrow, Cow};
-use cmp;
-use error::Error;
-use fmt;
-use fs;
-use hash::{Hash, Hasher};
-use io;
-use iter::{self, FusedIterator};
-use ops::{self, Deref};
-use rc::Rc;
-use str::FromStr;
-use string::ParseError;
-use sync::Arc;
+use crate::borrow::{Borrow, Cow};
+use crate::cmp;
+use crate::error::Error;
+use crate::fmt;
+use crate::fs;
+use crate::hash::{Hash, Hasher};
+use crate::io;
+use crate::iter::{self, FusedIterator};
+use crate::ops::{self, Deref};
+use crate::rc::Rc;
+use crate::str::FromStr;
+use crate::sync::Arc;
 
-use ffi::{OsStr, OsString};
+use crate::ffi::{OsStr, OsString};
 
-use sys::path::{is_sep_byte, is_verbatim_sep, MAIN_SEP_STR, parse_prefix};
+use crate::sys::path::{is_sep_byte, is_verbatim_sep, MAIN_SEP_STR, parse_prefix};
 
 ////////////////////////////////////////////////////////////////////////////////
 // GENERAL NOTES
@@ -280,7 +281,7 @@ pub fn is_separator(c: char) -> bool {
 ///
 /// For example, `/` on Unix and `\` on Windows.
 #[stable(feature = "rust1", since = "1.0.0")]
-pub const MAIN_SEPARATOR: char = ::sys::path::MAIN_SEP;
+pub const MAIN_SEPARATOR: char = crate::sys::path::MAIN_SEP;
 
 ////////////////////////////////////////////////////////////////////////////////
 // Misc helpers
@@ -324,7 +325,7 @@ fn has_redox_scheme(s: &[u8]) -> bool {
 ////////////////////////////////////////////////////////////////////////////////
 
 /// Says whether the first byte after the prefix is a separator.
-fn has_physical_root(s: &[u8], prefix: Option<Prefix>) -> bool {
+fn has_physical_root(s: &[u8], prefix: Option<Prefix<'_>>) -> bool {
     let path = if let Some(p) = prefix {
         &s[p.len()..]
     } else {
@@ -457,14 +458,14 @@ impl<'a> cmp::PartialOrd for PrefixComponent<'a> {
 }
 
 #[stable(feature = "rust1", since = "1.0.0")]
-impl<'a> cmp::Ord for PrefixComponent<'a> {
-    fn cmp(&self, other: &PrefixComponent<'a>) -> cmp::Ordering {
+impl cmp::Ord for PrefixComponent<'_> {
+    fn cmp(&self, other: &Self) -> cmp::Ordering {
         cmp::Ord::cmp(&self.parsed, &other.parsed)
     }
 }
 
 #[stable(feature = "rust1", since = "1.0.0")]
-impl<'a> Hash for PrefixComponent<'a> {
+impl Hash for PrefixComponent<'_> {
     fn hash<H: Hasher>(&self, h: &mut H) {
         self.parsed.hash(h);
     }
@@ -561,14 +562,14 @@ impl<'a> Component<'a> {
 }
 
 #[stable(feature = "rust1", since = "1.0.0")]
-impl<'a> AsRef<OsStr> for Component<'a> {
+impl AsRef<OsStr> for Component<'_> {
     fn as_ref(&self) -> &OsStr {
         self.as_os_str()
     }
 }
 
 #[stable(feature = "path_component_asref", since = "1.25.0")]
-impl<'a> AsRef<Path> for Component<'a> {
+impl AsRef<Path> for Component<'_> {
     fn as_ref(&self) -> &Path {
         self.as_os_str().as_ref()
     }
@@ -630,12 +631,12 @@ pub struct Iter<'a> {
 }
 
 #[stable(feature = "path_components_debug", since = "1.13.0")]
-impl<'a> fmt::Debug for Components<'a> {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+impl fmt::Debug for Components<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         struct DebugHelper<'a>(&'a Path);
 
-        impl<'a> fmt::Debug for DebugHelper<'a> {
-            fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        impl fmt::Debug for DebugHelper<'_> {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
                 f.debug_list()
                     .entries(self.0.components())
                     .finish()
@@ -814,26 +815,26 @@ impl<'a> Components<'a> {
 }
 
 #[stable(feature = "rust1", since = "1.0.0")]
-impl<'a> AsRef<Path> for Components<'a> {
+impl AsRef<Path> for Components<'_> {
     fn as_ref(&self) -> &Path {
         self.as_path()
     }
 }
 
 #[stable(feature = "rust1", since = "1.0.0")]
-impl<'a> AsRef<OsStr> for Components<'a> {
+impl AsRef<OsStr> for Components<'_> {
     fn as_ref(&self) -> &OsStr {
         self.as_path().as_os_str()
     }
 }
 
 #[stable(feature = "path_iter_debug", since = "1.13.0")]
-impl<'a> fmt::Debug for Iter<'a> {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+impl fmt::Debug for Iter<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         struct DebugHelper<'a>(&'a Path);
 
-        impl<'a> fmt::Debug for DebugHelper<'a> {
-            fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        impl fmt::Debug for DebugHelper<'_> {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
                 f.debug_list()
                     .entries(self.0.iter())
                     .finish()
@@ -867,14 +868,14 @@ impl<'a> Iter<'a> {
 }
 
 #[stable(feature = "rust1", since = "1.0.0")]
-impl<'a> AsRef<Path> for Iter<'a> {
+impl AsRef<Path> for Iter<'_> {
     fn as_ref(&self) -> &Path {
         self.as_path()
     }
 }
 
 #[stable(feature = "rust1", since = "1.0.0")]
-impl<'a> AsRef<OsStr> for Iter<'a> {
+impl AsRef<OsStr> for Iter<'_> {
     fn as_ref(&self) -> &OsStr {
         self.as_path().as_os_str()
     }
@@ -897,7 +898,7 @@ impl<'a> DoubleEndedIterator for Iter<'a> {
 }
 
 #[stable(feature = "fused", since = "1.26.0")]
-impl<'a> FusedIterator for Iter<'a> {}
+impl FusedIterator for Iter<'_> {}
 
 #[stable(feature = "rust1", since = "1.0.0")]
 impl<'a> Iterator for Components<'a> {
@@ -1000,7 +1001,7 @@ impl<'a> DoubleEndedIterator for Components<'a> {
 }
 
 #[stable(feature = "fused", since = "1.26.0")]
-impl<'a> FusedIterator for Components<'a> {}
+impl FusedIterator for Components<'_> {}
 
 #[stable(feature = "rust1", since = "1.0.0")]
 impl<'a> cmp::PartialEq for Components<'a> {
@@ -1010,7 +1011,7 @@ impl<'a> cmp::PartialEq for Components<'a> {
 }
 
 #[stable(feature = "rust1", since = "1.0.0")]
-impl<'a> cmp::Eq for Components<'a> {}
+impl cmp::Eq for Components<'_> {}
 
 #[stable(feature = "rust1", since = "1.0.0")]
 impl<'a> cmp::PartialOrd for Components<'a> {
@@ -1020,8 +1021,8 @@ impl<'a> cmp::PartialOrd for Components<'a> {
 }
 
 #[stable(feature = "rust1", since = "1.0.0")]
-impl<'a> cmp::Ord for Components<'a> {
-    fn cmp(&self, other: &Components<'a>) -> cmp::Ordering {
+impl cmp::Ord for Components<'_> {
+    fn cmp(&self, other: &Self) -> cmp::Ordering {
         Iterator::cmp(self.clone(), other.clone())
     }
 }
@@ -1063,7 +1064,7 @@ impl<'a> Iterator for Ancestors<'a> {
 }
 
 #[stable(feature = "path_ancestors", since = "1.28.0")]
-impl<'a> FusedIterator for Ancestors<'a> {}
+impl FusedIterator for Ancestors<'_> {}
 
 ////////////////////////////////////////////////////////////////////////////////
 // Basic types and traits
@@ -1143,6 +1144,33 @@ impl PathBuf {
     #[stable(feature = "rust1", since = "1.0.0")]
     pub fn new() -> PathBuf {
         PathBuf { inner: OsString::new() }
+    }
+
+    /// Creates a new `PathBuf` with a given capacity used to create the
+    /// internal [`OsString`]. See [`with_capacity`] defined on [`OsString`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// #![feature(path_buf_capacity)]
+    /// use std::path::PathBuf;
+    ///
+    /// let mut path = PathBuf::with_capacity(10);
+    /// let capacity = path.capacity();
+    ///
+    /// // This push is done without reallocating
+    /// path.push(r"C:\");
+    ///
+    /// assert_eq!(capacity, path.capacity());
+    /// ```
+    ///
+    /// [`with_capacity`]: ../ffi/struct.OsString.html#method.with_capacity
+    /// [`OsString`]: ../ffi/struct.OsString.html
+    #[unstable(feature = "path_buf_capacity", issue = "58234")]
+    pub fn with_capacity(capacity: usize) -> PathBuf {
+        PathBuf {
+            inner: OsString::with_capacity(capacity)
+        }
     }
 
     /// Coerces to a [`Path`] slice.
@@ -1230,12 +1258,11 @@ impl PathBuf {
 
     /// Truncates `self` to [`self.parent`].
     ///
-    /// Returns `false` and does nothing if [`self.file_name`] is [`None`].
+    /// Returns `false` and does nothing if [`self.parent`] is [`None`].
     /// Otherwise, returns `true`.
     ///
     /// [`None`]: ../../std/option/enum.Option.html#variant.None
     /// [`self.parent`]: struct.PathBuf.html#method.parent
-    /// [`self.file_name`]: struct.PathBuf.html#method.file_name
     ///
     /// # Examples
     ///
@@ -1374,11 +1401,65 @@ impl PathBuf {
         let rw = Box::into_raw(self.inner.into_boxed_os_str()) as *mut Path;
         unsafe { Box::from_raw(rw) }
     }
+
+    /// Invokes [`capacity`] on the underlying instance of [`OsString`].
+    ///
+    /// [`capacity`]: ../ffi/struct.OsString.html#method.capacity
+    /// [`OsString`]: ../ffi/struct.OsString.html
+    #[unstable(feature = "path_buf_capacity", issue = "58234")]
+    pub fn capacity(&self) -> usize {
+        self.inner.capacity()
+    }
+
+    /// Invokes [`clear`] on the underlying instance of [`OsString`].
+    ///
+    /// [`clear`]: ../ffi/struct.OsString.html#method.clear
+    /// [`OsString`]: ../ffi/struct.OsString.html
+    #[unstable(feature = "path_buf_capacity", issue = "58234")]
+    pub fn clear(&mut self) {
+        self.inner.clear()
+    }
+
+    /// Invokes [`reserve`] on the underlying instance of [`OsString`].
+    ///
+    /// [`reserve`]: ../ffi/struct.OsString.html#method.reserve
+    /// [`OsString`]: ../ffi/struct.OsString.html
+    #[unstable(feature = "path_buf_capacity", issue = "58234")]
+    pub fn reserve(&mut self, additional: usize) {
+        self.inner.reserve(additional)
+    }
+
+    /// Invokes [`reserve_exact`] on the underlying instance of [`OsString`].
+    ///
+    /// [`reserve_exact`]: ../ffi/struct.OsString.html#method.reserve_exact
+    /// [`OsString`]: ../ffi/struct.OsString.html
+    #[unstable(feature = "path_buf_capacity", issue = "58234")]
+    pub fn reserve_exact(&mut self, additional: usize) {
+        self.inner.reserve_exact(additional)
+    }
+
+    /// Invokes [`shrink_to_fit`] on the underlying instance of [`OsString`].
+    ///
+    /// [`shrink_to_fit`]: ../ffi/struct.OsString.html#method.shrink_to_fit
+    /// [`OsString`]: ../ffi/struct.OsString.html
+    #[unstable(feature = "path_buf_capacity", issue = "58234")]
+    pub fn shrink_to_fit(&mut self) {
+        self.inner.shrink_to_fit()
+    }
+
+    /// Invokes [`shrink_to`] on the underlying instance of [`OsString`].
+    ///
+    /// [`shrink_to`]: ../ffi/struct.OsString.html#method.shrink_to
+    /// [`OsString`]: ../ffi/struct.OsString.html
+    #[unstable(feature = "path_buf_capacity", issue = "58234")]
+    pub fn shrink_to(&mut self, min_capacity: usize) {
+        self.inner.shrink_to(min_capacity)
+    }
 }
 
 #[stable(feature = "box_from_path", since = "1.17.0")]
-impl<'a> From<&'a Path> for Box<Path> {
-    fn from(path: &'a Path) -> Box<Path> {
+impl From<&Path> for Box<Path> {
+    fn from(path: &Path) -> Box<Path> {
         let boxed: Box<OsStr> = path.inner.into();
         let rw = Box::into_raw(boxed) as *mut Path;
         unsafe { Box::from_raw(rw) }
@@ -1415,8 +1496,8 @@ impl Clone for Box<Path> {
 }
 
 #[stable(feature = "rust1", since = "1.0.0")]
-impl<'a, T: ?Sized + AsRef<OsStr>> From<&'a T> for PathBuf {
-    fn from(s: &'a T) -> PathBuf {
+impl<T: ?Sized + AsRef<OsStr>> From<&T> for PathBuf {
+    fn from(s: &T) -> PathBuf {
         PathBuf::from(s.as_ref().to_os_string())
     }
 }
@@ -1453,7 +1534,7 @@ impl From<String> for PathBuf {
 
 #[stable(feature = "path_from_str", since = "1.32.0")]
 impl FromStr for PathBuf {
-    type Err = ParseError;
+    type Err = core::convert::Infallible;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         Ok(PathBuf::from(s))
@@ -1472,15 +1553,13 @@ impl<P: AsRef<Path>> iter::FromIterator<P> for PathBuf {
 #[stable(feature = "rust1", since = "1.0.0")]
 impl<P: AsRef<Path>> iter::Extend<P> for PathBuf {
     fn extend<I: IntoIterator<Item = P>>(&mut self, iter: I) {
-        for p in iter {
-            self.push(p.as_ref())
-        }
+        iter.into_iter().for_each(move |p| self.push(p.as_ref()));
     }
 }
 
 #[stable(feature = "rust1", since = "1.0.0")]
 impl fmt::Debug for PathBuf {
-    fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Debug::fmt(&**self, formatter)
     }
 }
@@ -1551,7 +1630,7 @@ impl From<PathBuf> for Arc<Path> {
 }
 
 #[stable(feature = "shared_from_slice2", since = "1.24.0")]
-impl<'a> From<&'a Path> for Arc<Path> {
+impl From<&Path> for Arc<Path> {
     /// Converts a Path into a Rc by copying the Path data into a new Rc buffer.
     #[inline]
     fn from(s: &Path) -> Arc<Path> {
@@ -1571,7 +1650,7 @@ impl From<PathBuf> for Rc<Path> {
 }
 
 #[stable(feature = "shared_from_slice2", since = "1.24.0")]
-impl<'a> From<&'a Path> for Rc<Path> {
+impl From<&Path> for Rc<Path> {
     /// Converts a Path into a Rc by copying the Path data into a new Rc buffer.
     #[inline]
     fn from(s: &Path) -> Rc<Path> {
@@ -1778,7 +1857,7 @@ impl Path {
     /// Had `path` contained invalid unicode, the `to_string_lossy` call might
     /// have returned `"fo�.txt"`.
     #[stable(feature = "rust1", since = "1.0.0")]
-    pub fn to_string_lossy(&self) -> Cow<str> {
+    pub fn to_string_lossy(&self) -> Cow<'_, str> {
         self.inner.to_string_lossy()
     }
 
@@ -1847,7 +1926,7 @@ impl Path {
         !self.is_absolute()
     }
 
-    fn prefix(&self) -> Option<Prefix> {
+    fn prefix(&self) -> Option<Prefix<'_>> {
         self.components().prefix
     }
 
@@ -1928,7 +2007,7 @@ impl Path {
     /// [`None`]: ../../std/option/enum.Option.html#variant.None
     /// [`parent`]: struct.Path.html#method.parent
     #[stable(feature = "path_ancestors", since = "1.28.0")]
-    pub fn ancestors(&self) -> Ancestors {
+    pub fn ancestors(&self) -> Ancestors<'_> {
         Ancestors {
             next: Some(&self),
         }
@@ -2226,7 +2305,7 @@ impl Path {
     /// [`Component`]: enum.Component.html
     /// [`CurDir`]: enum.Component.html#variant.CurDir
     #[stable(feature = "rust1", since = "1.0.0")]
-    pub fn components(&self) -> Components {
+    pub fn components(&self) -> Components<'_> {
         let prefix = parse_prefix(self.as_os_str());
         Components {
             path: self.as_u8_slice(),
@@ -2260,7 +2339,7 @@ impl Path {
     /// assert_eq!(it.next(), None)
     /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
-    pub fn iter(&self) -> Iter {
+    pub fn iter(&self) -> Iter<'_> {
         Iter { inner: self.components() }
     }
 
@@ -2279,7 +2358,7 @@ impl Path {
     /// println!("{}", path.display());
     /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
-    pub fn display(&self) -> Display {
+    pub fn display(&self) -> Display<'_> {
         Display { path: self }
     }
 
@@ -2393,7 +2472,7 @@ impl Path {
         fs::read_dir(self)
     }
 
-    /// Returns whether the path points at an existing entity.
+    /// Returns `true` if the path points at an existing entity.
     ///
     /// This function will traverse symbolic links to query information about the
     /// destination file. In case of broken symbolic links this will return `false`.
@@ -2419,7 +2498,7 @@ impl Path {
         fs::metadata(self).is_ok()
     }
 
-    /// Returns whether the path exists on disk and is pointing at a regular file.
+    /// Returns `true` if the path exists on disk and is pointing at a regular file.
     ///
     /// This function will traverse symbolic links to query information about the
     /// destination file. In case of broken symbolic links this will return `false`.
@@ -2448,7 +2527,7 @@ impl Path {
         fs::metadata(self).map(|m| m.is_file()).unwrap_or(false)
     }
 
-    /// Returns whether the path exists on disk and is pointing at a directory.
+    /// Returns `true` if the path exists on disk and is pointing at a directory.
     ///
     /// This function will traverse symbolic links to query information about the
     /// destination file. In case of broken symbolic links this will return `false`.
@@ -2499,7 +2578,7 @@ impl AsRef<OsStr> for Path {
 
 #[stable(feature = "rust1", since = "1.0.0")]
 impl fmt::Debug for Path {
-    fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Debug::fmt(&self.inner, formatter)
     }
 }
@@ -2530,15 +2609,15 @@ pub struct Display<'a> {
 }
 
 #[stable(feature = "rust1", since = "1.0.0")]
-impl<'a> fmt::Debug for Display<'a> {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+impl fmt::Debug for Display<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Debug::fmt(&self.path, f)
     }
 }
 
 #[stable(feature = "rust1", since = "1.0.0")]
-impl<'a> fmt::Display for Display<'a> {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+impl fmt::Display for Display<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.path.inner.display(f)
     }
 }
@@ -2591,7 +2670,7 @@ impl AsRef<Path> for OsStr {
 }
 
 #[stable(feature = "cow_os_str_as_ref_path", since = "1.8.0")]
-impl<'a> AsRef<Path> for Cow<'a, OsStr> {
+impl AsRef<Path> for Cow<'_, OsStr> {
     fn as_ref(&self) -> &Path {
         Path::new(self)
     }
@@ -2726,7 +2805,7 @@ impl_cmp_os_str!(Cow<'a, Path>, OsString);
 
 #[stable(since = "1.7.0", feature = "strip_prefix")]
 impl fmt::Display for StripPrefixError {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.description().fmt(f)
     }
 }
@@ -2740,8 +2819,8 @@ impl Error for StripPrefixError {
 mod tests {
     use super::*;
 
-    use rc::Rc;
-    use sync::Arc;
+    use crate::rc::Rc;
+    use crate::sync::Arc;
 
     macro_rules! t(
         ($path:expr, iter: $iter:expr) => (
@@ -2828,7 +2907,7 @@ mod tests {
 
     #[test]
     fn into() {
-        use borrow::Cow;
+        use crate::borrow::Cow;
 
         let static_path = Path::new("/home/foo");
         let static_cow_path: Cow<'static, Path> = static_path.into();
@@ -2836,7 +2915,7 @@ mod tests {
 
         {
             let path: &Path = &pathbuf;
-            let borrowed_cow_path: Cow<Path> = path.into();
+            let borrowed_cow_path: Cow<'_, Path> = path.into();
 
             assert_eq!(static_cow_path, borrowed_cow_path);
         }
@@ -3722,7 +3801,7 @@ mod tests {
             });
         );
 
-        if cfg!(unix) {
+        if cfg!(unix) || cfg!(all(target_env = "sgx", target_vendor = "fortanix")) {
             tp!("", "foo", "foo");
             tp!("foo", "bar", "foo/bar");
             tp!("foo/", "bar", "foo/bar");
@@ -3881,7 +3960,7 @@ mod tests {
         tfn!("foo", "bar", "bar");
         tfn!("foo", "", "");
         tfn!("", "foo", "foo");
-        if cfg!(unix) {
+        if cfg!(unix) || cfg!(all(target_env = "sgx", target_vendor = "fortanix")) {
             tfn!(".", "foo", "./foo");
             tfn!("foo/", "bar", "bar");
             tfn!("foo/.", "bar", "bar");
@@ -3928,14 +4007,14 @@ mod tests {
 
     #[test]
     fn test_eq_receivers() {
-        use borrow::Cow;
+        use crate::borrow::Cow;
 
         let borrowed: &Path = Path::new("foo/bar");
         let mut owned: PathBuf = PathBuf::new();
         owned.push("foo");
         owned.push("bar");
-        let borrowed_cow: Cow<Path> = borrowed.into();
-        let owned_cow: Cow<Path> = owned.clone().into();
+        let borrowed_cow: Cow<'_, Path> = borrowed.into();
+        let owned_cow: Cow<'_, Path> = owned.clone().into();
 
         macro_rules! t {
             ($($current:expr),+) => {
@@ -3953,8 +4032,8 @@ mod tests {
 
     #[test]
     pub fn test_compare() {
-        use hash::{Hash, Hasher};
-        use collections::hash_map::DefaultHasher;
+        use crate::hash::{Hash, Hasher};
+        use crate::collections::hash_map::DefaultHasher;
 
         fn hash<T: Hash>(t: T) -> u64 {
             let mut s = DefaultHasher::new();

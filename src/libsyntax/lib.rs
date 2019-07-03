@@ -4,42 +4,36 @@
 //!
 //! This API is completely unstable and subject to change.
 
-#![doc(html_logo_url = "https://www.rust-lang.org/logos/rust-logo-128x128-blk-v2.png",
-       html_favicon_url = "https://doc.rust-lang.org/favicon.ico",
-       html_root_url = "https://doc.rust-lang.org/nightly/",
+#![doc(html_root_url = "https://doc.rust-lang.org/nightly/",
        test(attr(deny(warnings))))]
 
+#![deny(rust_2018_idioms)]
+#![deny(internal)]
+#![deny(unused_lifetimes)]
+
+#![feature(bind_by_move_pattern_guards)]
 #![feature(crate_visibility_modifier)]
 #![feature(label_break_value)]
 #![feature(nll)]
 #![feature(rustc_attrs)]
 #![feature(rustc_diagnostic_macros)]
-#![feature(slice_sort_by_cached_key)]
-#![feature(str_escape)]
 #![feature(step_trait)]
 #![feature(try_trait)]
 #![feature(unicode_internals)]
 
 #![recursion_limit="256"]
 
-#[macro_use] extern crate bitflags;
-extern crate core;
-extern crate serialize;
-#[macro_use] extern crate log;
-pub extern crate rustc_errors as errors;
-extern crate syntax_pos;
-#[macro_use] extern crate rustc_data_structures;
-extern crate rustc_target;
-#[macro_use] extern crate scoped_tls;
-#[macro_use]
-extern crate smallvec;
-
+#[allow(unused_extern_crates)]
 extern crate serialize as rustc_serialize; // used by deriving
 
+pub use errors;
 use rustc_data_structures::sync::Lock;
 use rustc_data_structures::bit_set::GrowableBitSet;
 pub use rustc_data_structures::thin_vec::ThinVec;
 use ast::AttrId;
+use syntax_pos::edition::Edition;
+
+const MACRO_ARGUMENTS: Option<&'static str> = Some("macro arguments");
 
 // A variant of 'try!' that panics on an Err. This is used as a crutch on the
 // way towards a non-panic!-prone parser. It should be used for fatal parsing
@@ -93,27 +87,33 @@ pub struct Globals {
 }
 
 impl Globals {
-    fn new() -> Globals {
+    fn new(edition: Edition) -> Globals {
         Globals {
             // We have no idea how many attributes their will be, so just
             // initiate the vectors with 0 bits. We'll grow them as necessary.
             used_attrs: Lock::new(GrowableBitSet::new_empty()),
             known_attrs: Lock::new(GrowableBitSet::new_empty()),
-            syntax_pos_globals: syntax_pos::Globals::new(),
+            syntax_pos_globals: syntax_pos::Globals::new(edition),
         }
     }
 }
 
-pub fn with_globals<F, R>(f: F) -> R
+pub fn with_globals<F, R>(edition: Edition, f: F) -> R
     where F: FnOnce() -> R
 {
-    let globals = Globals::new();
+    let globals = Globals::new(edition);
     GLOBALS.set(&globals, || {
         syntax_pos::GLOBALS.set(&globals.syntax_pos_globals, f)
     })
 }
 
-scoped_thread_local!(pub static GLOBALS: Globals);
+pub fn with_default_globals<F, R>(f: F) -> R
+    where F: FnOnce() -> R
+{
+    with_globals(edition::DEFAULT_EDITION, f)
+}
+
+scoped_tls::scoped_thread_local!(pub static GLOBALS: Globals);
 
 #[macro_use]
 pub mod diagnostics {
@@ -125,7 +125,7 @@ pub mod diagnostics {
 
 // N.B., this module needs to be declared first so diagnostics are
 // registered before they are used.
-pub mod diagnostic_list;
+pub mod error_codes;
 
 pub mod util {
     pub mod lev_distance;
@@ -133,16 +133,10 @@ pub mod util {
     pub mod parser;
     #[cfg(test)]
     pub mod parser_testing;
-    pub mod move_map;
+    pub mod map_in_place;
 }
 
 pub mod json;
-
-pub mod syntax {
-    pub use ext;
-    pub use parse;
-    pub use ast;
-}
 
 pub mod ast;
 pub mod attr;
@@ -151,7 +145,7 @@ pub mod source_map;
 pub mod config;
 pub mod entry;
 pub mod feature_gate;
-pub mod fold;
+pub mod mut_visit;
 pub mod parse;
 pub mod ptr;
 pub mod show_span;

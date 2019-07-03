@@ -1,6 +1,6 @@
 use super::Wrapping;
 
-use ops::*;
+use crate::ops::*;
 
 #[allow(unused_macros)]
 macro_rules! sh_impl_signed {
@@ -429,7 +429,8 @@ assert_eq!(n.trailing_zeros(), 3);
             /// wrapping the truncated bits to the end of the resulting
             /// integer.
             ///
-            /// Please note this isn't the same operation as `>>`!
+            /// Please note this isn't the same operation as the `>>` shifting
+            /// operator!
             ///
             /// # Examples
             ///
@@ -454,7 +455,8 @@ assert_eq!(n.trailing_zeros(), 3);
             /// wrapping the truncated bits to the beginning of the resulting
             /// integer.
             ///
-            /// Please note this isn't the same operation as `<<`!
+            /// Please note this isn't the same operation as the `<<` shifting
+            /// operator!
             ///
             /// # Examples
             ///
@@ -509,7 +511,6 @@ assert_eq!(n.trailing_zeros(), 3);
             /// Basic usage:
             ///
             /// ```
-            /// #![feature(reverse_bits)]
             /// use std::num::Wrapping;
             ///
             /// let n = Wrapping(0b0000000_01010101i16);
@@ -520,8 +521,9 @@ assert_eq!(n.trailing_zeros(), 3);
             /// assert_eq!(m.0 as u16, 0b10101010_00000000);
             /// assert_eq!(m, Wrapping(-22016));
             /// ```
-            #[unstable(feature = "reverse_bits", issue = "48763")]
+            #[stable(feature = "reverse_bits", since = "1.37.0")]
             #[inline]
+            #[must_use]
             pub const fn reverse_bits(self) -> Self {
                 Wrapping(self.0.reverse_bits())
             }

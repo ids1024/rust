@@ -1,20 +1,22 @@
 // Inline assembly support.
 //
-use self::State::*;
+use State::*;
 
 use rustc_data_structures::thin_vec::ThinVec;
 
 use errors::DiagnosticBuilder;
+
 use syntax::ast;
-use syntax::ext::base;
-use syntax::ext::base::*;
+use syntax::ext::base::{self, *};
 use syntax::feature_gate;
-use syntax::parse::{self, token};
+use syntax::parse;
+use syntax::parse::token::{self, Token};
 use syntax::ptr::P;
-use syntax::symbol::Symbol;
+use syntax::symbol::{kw, sym, Symbol};
 use syntax::ast::AsmDialect;
 use syntax_pos::Span;
 use syntax::tokenstream;
+use syntax::{span_err, struct_span_err};
 
 enum State {
     Asm,
@@ -38,15 +40,15 @@ impl State {
     }
 }
 
-const OPTIONS: &[&str] = &["volatile", "alignstack", "intel"];
+const OPTIONS: &[Symbol] = &[sym::volatile, sym::alignstack, sym::intel];
 
-pub fn expand_asm<'cx>(cx: &'cx mut ExtCtxt,
+pub fn expand_asm<'cx>(cx: &'cx mut ExtCtxt<'_>,
                        sp: Span,
                        tts: &[tokenstream::TokenTree])
                        -> Box<dyn base::MacResult + 'cx> {
     if !cx.ecfg.enable_asm() {
         feature_gate::emit_feature_err(&cx.parse_sess,
-                                       "asm",
+                                       sym::asm,
                                        sp,
                                        feature_gate::GateIssue::Language,
                                        feature_gate::EXPLAIN_ASM);
@@ -85,14 +87,14 @@ fn parse_inline_asm<'a>(
     let first_colon = tts.iter()
         .position(|tt| {
             match *tt {
-                tokenstream::TokenTree::Token(_, token::Colon) |
-                tokenstream::TokenTree::Token(_, token::ModSep) => true,
+                tokenstream::TokenTree::Token(Token { kind: token::Colon, .. }) |
+                tokenstream::TokenTree::Token(Token { kind: token::ModSep, .. }) => true,
                 _ => false,
             }
         })
         .unwrap_or(tts.len());
     let mut p = cx.new_parser_from_tts(&tts[first_colon..]);
-    let mut asm = Symbol::intern("");
+    let mut asm = kw::Invalid;
     let mut asm_str_style = None;
     let mut outputs = Vec::new();
     let mut inputs = Vec::new();
@@ -137,7 +139,11 @@ fn parse_inline_asm<'a>(
                 if p2.token != token::Eof {
                     let mut extra_tts = p2.parse_all_token_trees()?;
                     extra_tts.extend(tts[first_colon..].iter().cloned());
-                    p = parse::stream_to_parser(cx.parse_sess, extra_tts.into_iter().collect());
+                    p = parse::stream_to_parser(
+                        cx.parse_sess,
+                        extra_tts.into_iter().collect(),
+                        Some("inline assembly"),
+                    );
                 }
 
                 asm = s;
@@ -232,13 +238,13 @@ fn parse_inline_asm<'a>(
             Options => {
                 let (option, _) = p.parse_str()?;
 
-                if option == "volatile" {
+                if option == sym::volatile {
                     // Indicates that the inline assembly has side effects
                     // and must not be optimized out along with its outputs.
                     volatile = true;
-                } else if option == "alignstack" {
+                } else if option == sym::alignstack {
                     alignstack = true;
-                } else if option == "intel" {
+                } else if option == sym::intel {
                     dialect = AsmDialect::Intel;
                 } else {
                     cx.span_warn(p.prev_span, "unrecognized option");
@@ -254,7 +260,7 @@ fn parse_inline_asm<'a>(
         loop {
             // MOD_SEP is a double colon '::' without space in between.
             // When encountered, the state must be advanced twice.
-            match (&p.token, state.next(), state.next().next()) {
+            match (&p.token.kind, state.next(), state.next().next()) {
                 (&token::Colon, StateNone, _) |
                 (&token::ModSep, _, StateNone) => {
                     p.bump();

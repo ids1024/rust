@@ -1,14 +1,14 @@
 //! See docs in build/expr/mod.rs
 
-use build::expr::category::{Category, RvalueFunc};
-use build::{BlockAnd, BlockAndExtension, BlockFrame, Builder};
-use hair::*;
+use crate::build::expr::category::{Category, RvalueFunc};
+use crate::build::{BlockAnd, BlockAndExtension, BlockFrame, Builder};
+use crate::hair::*;
 use rustc::mir::*;
 use rustc::ty;
 
 use rustc_target::spec::abi::Abi;
 
-impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
+impl<'a, 'tcx> Builder<'a, 'tcx> {
     /// Compile `expr`, storing the result into `destination`, which
     /// is assumed to be uninitialized.
     pub fn into_expr(
@@ -46,15 +46,15 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
                 value,
             } => {
                 let region_scope = (region_scope, source_info);
-                this.in_scope(region_scope, lint_level, block, |this| {
+                this.in_scope(region_scope, lint_level, |this| {
                     this.into(destination, block, value)
                 })
             }
             ExprKind::Block { body: ast_block } => {
                 this.ast_block(destination, block, ast_block, source_info)
             }
-            ExprKind::Match { discriminant, arms } => {
-                this.match_expr(destination, expr_span, block, discriminant, arms)
+            ExprKind::Match { scrutinee, arms } => {
+                this.match_expr(destination, expr_span, block, scrutinee, arms)
             }
             ExprKind::NeverToAny { source } => {
                 let source = this.hir.mirror(source);
@@ -75,43 +75,6 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
                     let end_block = this.cfg.start_new_block();
                     end_block.unit()
                 }
-            }
-            ExprKind::If {
-                condition: cond_expr,
-                then: then_expr,
-                otherwise: else_expr,
-            } => {
-                let operand = unpack!(block = this.as_local_operand(block, cond_expr));
-
-                let mut then_block = this.cfg.start_new_block();
-                let mut else_block = this.cfg.start_new_block();
-                let term = TerminatorKind::if_(this.hir.tcx(), operand, then_block, else_block);
-                this.cfg.terminate(block, source_info, term);
-
-                unpack!(then_block = this.into(destination, then_block, then_expr));
-                else_block = if let Some(else_expr) = else_expr {
-                    unpack!(this.into(destination, else_block, else_expr))
-                } else {
-                    // Body of the `if` expression without an `else` clause must return `()`, thus
-                    // we implicitly generate a `else {}` if it is not specified.
-                    this.cfg
-                        .push_assign_unit(else_block, source_info, destination);
-                    else_block
-                };
-
-                let join_block = this.cfg.start_new_block();
-                this.cfg.terminate(
-                    then_block,
-                    source_info,
-                    TerminatorKind::Goto { target: join_block },
-                );
-                this.cfg.terminate(
-                    else_block,
-                    source_info,
-                    TerminatorKind::Goto { target: join_block },
-                );
-
-                join_block.unit()
             }
             ExprKind::LogicalOp { op, lhs, rhs } => {
                 // And:
@@ -295,7 +258,7 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
                         is_user_variable: None,
                         is_block_tail: None,
                     });
-                    let ptr_temp = Place::Local(ptr_temp);
+                    let ptr_temp = Place::Base(PlaceBase::Local(ptr_temp));
                     let block = unpack!(this.into(&ptr_temp, block, ptr));
                     this.into(&ptr_temp.deref(), block, val)
                 } else {
@@ -326,6 +289,9 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
                     );
                     success.unit()
                 }
+            }
+            ExprKind::Use { source } => {
+                this.into(destination, block, source)
             }
 
             // These cases don't actually need a destination
@@ -379,11 +345,7 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
             | ExprKind::Binary { .. }
             | ExprKind::Box { .. }
             | ExprKind::Cast { .. }
-            | ExprKind::Use { .. }
-            | ExprKind::ReifyFnPointer { .. }
-            | ExprKind::ClosureFnPointer { .. }
-            | ExprKind::UnsafeFnPointer { .. }
-            | ExprKind::Unsize { .. }
+            | ExprKind::Pointer { .. }
             | ExprKind::Repeat { .. }
             | ExprKind::Borrow { .. }
             | ExprKind::Array { .. }

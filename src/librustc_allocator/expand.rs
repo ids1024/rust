@@ -1,6 +1,6 @@
+use log::debug;
 use rustc::middle::allocator::AllocatorKind;
-use rustc_errors;
-use smallvec::SmallVec;
+use smallvec::{smallvec, SmallVec};
 use syntax::{
     ast::{
         self, Arg, Attribute, Crate, Expr, FnHeader, Generics, Ident, Item, ItemKind,
@@ -14,24 +14,24 @@ use syntax::{
         base::{ExtCtxt, Resolver},
         build::AstBuilder,
         expand::ExpansionConfig,
-        hygiene::{self, Mark, SyntaxContext},
+        hygiene::{Mark, SyntaxContext},
     },
-    fold::{self, Folder},
+    mut_visit::{self, MutVisitor},
     parse::ParseSess,
     ptr::P,
-    symbol::Symbol
+    symbol::{kw, sym, Symbol}
 };
 use syntax_pos::Span;
 
-use {AllocatorMethod, AllocatorTy, ALLOCATOR_METHODS};
+use crate::{AllocatorMethod, AllocatorTy, ALLOCATOR_METHODS};
 
 pub fn modify(
     sess: &ParseSess,
     resolver: &mut dyn Resolver,
-    krate: Crate,
+    krate: &mut Crate,
     crate_name: String,
     handler: &rustc_errors::Handler,
-) -> ast::Crate {
+) {
     ExpandAllocatorDirectives {
         handler,
         sess,
@@ -39,7 +39,7 @@ pub fn modify(
         found: false,
         crate_name: Some(crate_name),
         in_submod: -1, // -1 to account for the "root" module
-    }.fold_crate(krate)
+    }.visit_crate(krate);
 }
 
 struct ExpandAllocatorDirectives<'a> {
@@ -54,14 +54,14 @@ struct ExpandAllocatorDirectives<'a> {
     in_submod: isize,
 }
 
-impl<'a> Folder for ExpandAllocatorDirectives<'a> {
-    fn fold_item(&mut self, item: P<Item>) -> SmallVec<[P<Item>; 1]> {
+impl MutVisitor for ExpandAllocatorDirectives<'_> {
+    fn flat_map_item(&mut self, item: P<Item>) -> SmallVec<[P<Item>; 1]> {
         debug!("in submodule {}", self.in_submod);
 
-        let name = if attr::contains_name(&item.attrs, "global_allocator") {
+        let name = if attr::contains_name(&item.attrs, sym::global_allocator) {
             "global_allocator"
         } else {
-            return fold::noop_fold_item(item, self);
+            return mut_visit::noop_flat_map_item(item, self);
         };
         match item.node {
             ItemKind::Static(..) => {}
@@ -91,10 +91,10 @@ impl<'a> Folder for ExpandAllocatorDirectives<'a> {
             call_site: item.span, // use the call site of the static
             def_site: None,
             format: MacroAttribute(Symbol::intern(name)),
-            allow_internal_unstable: true,
+            allow_internal_unstable: Some(vec![sym::rustc_attrs].into()),
             allow_internal_unsafe: false,
             local_inner_macros: false,
-            edition: hygiene::default_edition(),
+            edition: self.sess.edition,
         });
 
         // Tie the span to the macro expansion info we just created
@@ -108,13 +108,13 @@ impl<'a> Folder for ExpandAllocatorDirectives<'a> {
             span,
             kind: AllocatorKind::Global,
             global: item.ident,
-            core: Ident::from_str("core"),
+            core: Ident::with_empty_ctxt(sym::core),
             cx: ExtCtxt::new(self.sess, ecfg, self.resolver),
         };
 
         // We will generate a new submodule. To `use` the static from that module, we need to get
         // the `super::...` path.
-        let super_path = f.cx.path(f.span, vec![Ident::from_str("super"), f.global]);
+        let super_path = f.cx.path(f.span, vec![Ident::with_empty_ctxt(kw::Super), f.global]);
 
         // Generate the items in the submodule
         let mut items = vec![
@@ -137,27 +137,26 @@ impl<'a> Folder for ExpandAllocatorDirectives<'a> {
 
         // Generate the submodule itself
         let name = f.kind.fn_name("allocator_abi");
-        let allocator_abi = Ident::with_empty_ctxt(Symbol::gensym(&name));
+        let allocator_abi = Ident::from_str(&name).gensym();
         let module = f.cx.item_mod(span, span, allocator_abi, Vec::new(), items);
-        let module = f.cx.monotonic_expander().fold_item(module).pop().unwrap();
+        let module = f.cx.monotonic_expander().flat_map_item(module).pop().unwrap();
 
         // Return the item and new submodule
         smallvec![item, module]
     }
 
     // If we enter a submodule, take note.
-    fn fold_mod(&mut self, m: Mod) -> Mod {
+    fn visit_mod(&mut self, m: &mut Mod) {
         debug!("enter submodule");
         self.in_submod += 1;
-        let ret = fold::noop_fold_mod(m, self);
+        mut_visit::noop_visit_mod(m, self);
         self.in_submod -= 1;
         debug!("exit submodule");
-        ret
     }
 
-    // `fold_mac` is disabled by default. Enable it here.
-    fn fold_mac(&mut self, mac: Mac) -> Mac {
-        fold::noop_fold_mac(mac, self)
+    // `visit_mac` is disabled by default. Enable it here.
+    fn visit_mac(&mut self, mac: &mut Mac) {
+        mut_visit::noop_visit_mac(mac, self)
     }
 }
 
@@ -169,7 +168,7 @@ struct AllocFnFactory<'a> {
     cx: ExtCtxt<'a>,
 }
 
-impl<'a> AllocFnFactory<'a> {
+impl AllocFnFactory<'_> {
     fn allocator_fn(&self, method: &AllocatorMethod) -> P<Item> {
         let mut abi_args = Vec::new();
         let mut i = 0;
@@ -222,7 +221,7 @@ impl<'a> AllocFnFactory<'a> {
     }
 
     fn attrs(&self) -> Vec<Attribute> {
-        let special = Symbol::intern("rustc_std_internal_symbol");
+        let special = sym::rustc_std_internal_symbol;
         let special = self.cx.meta_word(self.span, special);
         vec![self.cx.attribute(self.span, special)]
     }
@@ -235,7 +234,7 @@ impl<'a> AllocFnFactory<'a> {
     ) -> P<Expr> {
         match *ty {
             AllocatorTy::Layout => {
-                let usize = self.cx.path_ident(self.span, Ident::from_str("usize"));
+                let usize = self.cx.path_ident(self.span, Ident::with_empty_ctxt(sym::usize));
                 let ty_usize = self.cx.ty_path(usize);
                 let size = ident();
                 let align = ident();
@@ -297,12 +296,12 @@ impl<'a> AllocFnFactory<'a> {
     }
 
     fn usize(&self) -> P<Ty> {
-        let usize = self.cx.path_ident(self.span, Ident::from_str("usize"));
+        let usize = self.cx.path_ident(self.span, Ident::with_empty_ctxt(sym::usize));
         self.cx.ty_path(usize)
     }
 
     fn ptr_u8(&self) -> P<Ty> {
-        let u8 = self.cx.path_ident(self.span, Ident::from_str("u8"));
+        let u8 = self.cx.path_ident(self.span, Ident::with_empty_ctxt(sym::u8));
         let ty_u8 = self.cx.ty_path(u8);
         self.cx.ty_ptr(self.span, ty_u8, Mutability::Mutable)
     }

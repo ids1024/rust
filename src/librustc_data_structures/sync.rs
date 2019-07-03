@@ -1,27 +1,27 @@
-//! This module defines types which are thread safe if cfg!(parallel_queries) is true.
+//! This module defines types which are thread safe if cfg!(parallel_compiler) is true.
 //!
 //! `Lrc` is an alias of either Rc or Arc.
 //!
 //! `Lock` is a mutex.
-//! It internally uses `parking_lot::Mutex` if cfg!(parallel_queries) is true,
+//! It internally uses `parking_lot::Mutex` if cfg!(parallel_compiler) is true,
 //! `RefCell` otherwise.
 //!
 //! `RwLock` is a read-write lock.
-//! It internally uses `parking_lot::RwLock` if cfg!(parallel_queries) is true,
+//! It internally uses `parking_lot::RwLock` if cfg!(parallel_compiler) is true,
 //! `RefCell` otherwise.
 //!
-//! `MTLock` is a mutex which disappears if cfg!(parallel_queries) is false.
+//! `MTLock` is a mutex which disappears if cfg!(parallel_compiler) is false.
 //!
-//! `MTRef` is a immutable reference if cfg!(parallel_queries), and an mutable reference otherwise.
+//! `MTRef` is a immutable reference if cfg!(parallel_compiler), and an mutable reference otherwise.
 //!
 //! `rustc_erase_owner!` erases a OwningRef owner into Erased or Erased + Send + Sync
-//! depending on the value of cfg!(parallel_queries).
+//! depending on the value of cfg!(parallel_compiler).
 
 use std::collections::HashMap;
 use std::hash::{Hash, BuildHasher};
 use std::marker::PhantomData;
 use std::ops::{Deref, DerefMut};
-use owning_ref::{Erased, OwningRef};
+use crate::owning_ref::{Erased, OwningRef};
 
 pub fn serial_join<A, B, RA, RB>(oper_a: A, oper_b: B) -> (RA, RB)
     where A: FnOnce() -> RA,
@@ -50,7 +50,7 @@ pub use std::sync::atomic::Ordering::SeqCst;
 pub use std::sync::atomic::Ordering;
 
 cfg_if! {
-    if #[cfg(not(parallel_queries))] {
+    if #[cfg(not(parallel_compiler))] {
         pub auto trait Send {}
         pub auto trait Sync {}
 
@@ -65,6 +65,7 @@ cfg_if! {
         }
 
         use std::ops::Add;
+        use std::panic::{resume_unwind, catch_unwind, AssertUnwindSafe};
 
         #[derive(Debug)]
         pub struct Atomic<T: Copy>(Cell<T>);
@@ -127,10 +128,51 @@ cfg_if! {
         pub use self::serial_join as join;
         pub use self::serial_scope as scope;
 
+        #[macro_export]
+        macro_rules! parallel {
+            ($($blocks:tt),*) => {
+                // We catch panics here ensuring that all the blocks execute.
+                // This makes behavior consistent with the parallel compiler.
+                let mut panic = None;
+                $(
+                    if let Err(p) = ::std::panic::catch_unwind(
+                        ::std::panic::AssertUnwindSafe(|| $blocks)
+                    ) {
+                        if panic.is_none() {
+                            panic = Some(p);
+                        }
+                    }
+                )*
+                if let Some(panic) = panic {
+                    ::std::panic::resume_unwind(panic);
+                }
+            }
+        }
+
         pub use std::iter::Iterator as ParallelIterator;
 
         pub fn par_iter<T: IntoIterator>(t: T) -> T::IntoIter {
             t.into_iter()
+        }
+
+        pub fn par_for_each_in<T: IntoIterator>(
+            t: T,
+            for_each:
+                impl Fn(<<T as IntoIterator>::IntoIter as Iterator>::Item) + Sync + Send
+        ) {
+            // We catch panics here ensuring that all the loop iterations execute.
+            // This makes behavior consistent with the parallel compiler.
+            let mut panic = None;
+            t.into_iter().for_each(|i| {
+                if let Err(p) = catch_unwind(AssertUnwindSafe(|| for_each(i))) {
+                    if panic.is_none() {
+                        panic = Some(p);
+                    }
+                }
+            });
+            if let Some(panic) = panic {
+                resume_unwind(panic);
+            }
         }
 
         pub type MetadataRef = OwningRef<Box<dyn Erased>, [u8]>;
@@ -254,12 +296,12 @@ cfg_if! {
             }
 
             #[inline(always)]
-            pub fn lock(&self) -> LockGuard<T> {
+            pub fn lock(&self) -> LockGuard<'_, T> {
                 self.0.lock()
             }
 
             #[inline(always)]
-            pub fn lock_mut(&self) -> LockGuard<T> {
+            pub fn lock_mut(&self) -> LockGuard<'_, T> {
                 self.lock()
             }
         }
@@ -271,6 +313,29 @@ cfg_if! {
         use std::thread;
         pub use rayon::{join, scope};
 
+        /// Runs a list of blocks in parallel. The first block is executed immediately on
+        /// the current thread. Use that for the longest running block.
+        #[macro_export]
+        macro_rules! parallel {
+            (impl $fblock:tt [$($c:tt,)*] [$block:tt $(, $rest:tt)*]) => {
+                parallel!(impl $fblock [$block, $($c,)*] [$($rest),*])
+            };
+            (impl $fblock:tt [$($blocks:tt,)*] []) => {
+                ::rustc_data_structures::sync::scope(|s| {
+                    $(
+                        s.spawn(|_| $blocks);
+                    )*
+                    $fblock;
+                })
+            };
+            ($fblock:tt, $($blocks:tt),*) => {
+                // Reverse the order of the later blocks since Rayon executes them in reverse order
+                // when using a single thread. This ensures the execution order matches that
+                // of a single threaded rustc
+                parallel!(impl $fblock [] [$($blocks),*]);
+            };
+        }
+
         pub use rayon_core::WorkerLocal;
 
         pub use rayon::iter::ParallelIterator;
@@ -278,6 +343,15 @@ cfg_if! {
 
         pub fn par_iter<T: IntoParallelIterator>(t: T) -> T::Iter {
             t.into_par_iter()
+        }
+
+        pub fn par_for_each_in<T: IntoParallelIterator>(
+            t: T,
+            for_each: impl Fn(
+                <<T as IntoParallelIterator>::Iter as ParallelIterator>::Item
+            ) + Sync + Send
+        ) {
+            t.into_par_iter().for_each(for_each)
         }
 
         pub type MetadataRef = OwningRef<Box<dyn Erased + Send + Sync>, [u8]>;
@@ -461,21 +535,21 @@ impl<T> Lock<T> {
         self.0.get_mut()
     }
 
-    #[cfg(parallel_queries)]
+    #[cfg(parallel_compiler)]
     #[inline(always)]
-    pub fn try_lock(&self) -> Option<LockGuard<T>> {
+    pub fn try_lock(&self) -> Option<LockGuard<'_, T>> {
         self.0.try_lock()
     }
 
-    #[cfg(not(parallel_queries))]
+    #[cfg(not(parallel_compiler))]
     #[inline(always)]
-    pub fn try_lock(&self) -> Option<LockGuard<T>> {
+    pub fn try_lock(&self) -> Option<LockGuard<'_, T>> {
         self.0.try_borrow_mut().ok()
     }
 
-    #[cfg(parallel_queries)]
+    #[cfg(parallel_compiler)]
     #[inline(always)]
-    pub fn lock(&self) -> LockGuard<T> {
+    pub fn lock(&self) -> LockGuard<'_, T> {
         if ERROR_CHECKING {
             self.0.try_lock().expect("lock was already held")
         } else {
@@ -483,9 +557,9 @@ impl<T> Lock<T> {
         }
     }
 
-    #[cfg(not(parallel_queries))]
+    #[cfg(not(parallel_compiler))]
     #[inline(always)]
-    pub fn lock(&self) -> LockGuard<T> {
+    pub fn lock(&self) -> LockGuard<'_, T> {
         self.0.borrow_mut()
     }
 
@@ -495,12 +569,12 @@ impl<T> Lock<T> {
     }
 
     #[inline(always)]
-    pub fn borrow(&self) -> LockGuard<T> {
+    pub fn borrow(&self) -> LockGuard<'_, T> {
         self.lock()
     }
 
     #[inline(always)]
-    pub fn borrow_mut(&self) -> LockGuard<T> {
+    pub fn borrow_mut(&self) -> LockGuard<'_, T> {
         self.lock()
     }
 }
@@ -539,15 +613,15 @@ impl<T> RwLock<T> {
         self.0.get_mut()
     }
 
-    #[cfg(not(parallel_queries))]
+    #[cfg(not(parallel_compiler))]
     #[inline(always)]
-    pub fn read(&self) -> ReadGuard<T> {
+    pub fn read(&self) -> ReadGuard<'_, T> {
         self.0.borrow()
     }
 
-    #[cfg(parallel_queries)]
+    #[cfg(parallel_compiler)]
     #[inline(always)]
-    pub fn read(&self) -> ReadGuard<T> {
+    pub fn read(&self) -> ReadGuard<'_, T> {
         if ERROR_CHECKING {
             self.0.try_read().expect("lock was already held")
         } else {
@@ -560,27 +634,27 @@ impl<T> RwLock<T> {
         f(&*self.read())
     }
 
-    #[cfg(not(parallel_queries))]
+    #[cfg(not(parallel_compiler))]
     #[inline(always)]
-    pub fn try_write(&self) -> Result<WriteGuard<T>, ()> {
+    pub fn try_write(&self) -> Result<WriteGuard<'_, T>, ()> {
         self.0.try_borrow_mut().map_err(|_| ())
     }
 
-    #[cfg(parallel_queries)]
+    #[cfg(parallel_compiler)]
     #[inline(always)]
-    pub fn try_write(&self) -> Result<WriteGuard<T>, ()> {
+    pub fn try_write(&self) -> Result<WriteGuard<'_, T>, ()> {
         self.0.try_write().ok_or(())
     }
 
-    #[cfg(not(parallel_queries))]
+    #[cfg(not(parallel_compiler))]
     #[inline(always)]
-    pub fn write(&self) -> WriteGuard<T> {
+    pub fn write(&self) -> WriteGuard<'_, T> {
         self.0.borrow_mut()
     }
 
-    #[cfg(parallel_queries)]
+    #[cfg(parallel_compiler)]
     #[inline(always)]
-    pub fn write(&self) -> WriteGuard<T> {
+    pub fn write(&self) -> WriteGuard<'_, T> {
         if ERROR_CHECKING {
             self.0.try_write().expect("lock was already held")
         } else {
@@ -594,12 +668,12 @@ impl<T> RwLock<T> {
     }
 
     #[inline(always)]
-    pub fn borrow(&self) -> ReadGuard<T> {
+    pub fn borrow(&self) -> ReadGuard<'_, T> {
         self.read()
     }
 
     #[inline(always)]
-    pub fn borrow_mut(&self) -> WriteGuard<T> {
+    pub fn borrow_mut(&self) -> WriteGuard<'_, T> {
         self.write()
     }
 }
@@ -616,27 +690,27 @@ impl<T: Clone> Clone for RwLock<T> {
 /// It will panic if it is used on multiple threads.
 #[derive(Copy, Clone, Hash, Debug, Eq, PartialEq)]
 pub struct OneThread<T> {
-    #[cfg(parallel_queries)]
+    #[cfg(parallel_compiler)]
     thread: thread::ThreadId,
     inner: T,
 }
 
-#[cfg(parallel_queries)]
+#[cfg(parallel_compiler)]
 unsafe impl<T> std::marker::Sync for OneThread<T> {}
-#[cfg(parallel_queries)]
+#[cfg(parallel_compiler)]
 unsafe impl<T> std::marker::Send for OneThread<T> {}
 
 impl<T> OneThread<T> {
     #[inline(always)]
     fn check(&self) {
-        #[cfg(parallel_queries)]
+        #[cfg(parallel_compiler)]
         assert_eq!(thread::current().id(), self.thread);
     }
 
     #[inline(always)]
     pub fn new(inner: T) -> Self {
         OneThread {
-            #[cfg(parallel_queries)]
+            #[cfg(parallel_compiler)]
             thread: thread::current().id(),
             inner,
         }

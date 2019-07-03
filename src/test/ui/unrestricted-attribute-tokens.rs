@@ -1,6 +1,8 @@
 // compile-pass
 
-#![feature(custom_attribute, unrestricted_attribute_tokens)]
+#![feature(rustc_attrs)]
 
-#[my_attr(a b c d)]
+#[rustc_dummy(a b c d)]
+#[rustc_dummy[a b c d]]
+#[rustc_dummy{a b c d}]
 fn main() {}

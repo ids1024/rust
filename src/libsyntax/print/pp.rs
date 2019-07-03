@@ -1,10 +1,10 @@
 //! This pretty-printer is a direct reimplementation of Philip Karlton's
 //! Mesa pretty-printer, as described in appendix A of
 //!
-//! ````text
+//! ```text
 //! STAN-CS-79-770: "Pretty Printing", by Derek C. Oppen.
 //! Stanford Department of Computer Science, 1979.
-//! ````
+//! ```
 //!
 //! The algorithm's aim is to break a stream into as few lines as possible
 //! while respecting the indentation-consistency requirements of the enclosing
@@ -138,6 +138,7 @@ use std::collections::VecDeque;
 use std::fmt;
 use std::io;
 use std::borrow::Cow;
+use log::debug;
 
 /// How to break. Described in more detail in the module docs.
 #[derive(Clone, Copy, PartialEq)]
@@ -192,7 +193,7 @@ impl Token {
 }
 
 impl fmt::Display for Token {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match *self {
             Token::String(ref s, len) => write!(f, "STR({},{})", s, len),
             Token::Break(_) => f.write_str("BREAK"),
@@ -298,6 +299,8 @@ impl Default for BufEntry {
         BufEntry { token: Token::Eof, size: 0 }
     }
 }
+
+const SPACES: [u8; 128] = [b' '; 128];
 
 impl<'a> Printer<'a> {
     pub fn last_token(&mut self) -> Token {
@@ -579,10 +582,24 @@ impl<'a> Printer<'a> {
         debug!("print String({})", s);
         // assert!(len <= space);
         self.space -= len;
-        while self.pending_indentation > 0 {
-            write!(self.out, " ")?;
-            self.pending_indentation -= 1;
+
+        // Write the pending indent. A more concise way of doing this would be:
+        //
+        //   write!(self.out, "{: >n$}", "", n = self.pending_indentation as usize)?;
+        //
+        // But that is significantly slower than using `SPACES`. This code is
+        // sufficiently hot, and indents can get sufficiently large, that the
+        // difference is significant on some workloads.
+        let spaces_len = SPACES.len() as isize;
+        while self.pending_indentation >= spaces_len {
+            self.out.write_all(&SPACES)?;
+            self.pending_indentation -= spaces_len;
         }
+        if self.pending_indentation > 0 {
+            self.out.write_all(&SPACES[0..self.pending_indentation as usize])?;
+            self.pending_indentation = 0;
+        }
+
         write!(self.out, "{}", s)
     }
 

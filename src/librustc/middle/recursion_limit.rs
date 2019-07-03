@@ -5,17 +5,18 @@
 // this via an attribute on the crate like `#![recursion_limit="22"]`. This pass
 // just peeks and looks for that attribute.
 
-use session::Session;
+use crate::session::Session;
 use syntax::ast;
+use syntax::symbol::{Symbol, sym};
 
 use rustc_data_structures::sync::Once;
 
 pub fn update_limits(sess: &Session, krate: &ast::Crate) {
-    update_limit(krate, &sess.recursion_limit, "recursion_limit", 64);
-    update_limit(krate, &sess.type_length_limit, "type_length_limit", 1048576);
+    update_limit(krate, &sess.recursion_limit, sym::recursion_limit, 64);
+    update_limit(krate, &sess.type_length_limit, sym::type_length_limit, 1048576);
 }
 
-fn update_limit(krate: &ast::Crate, limit: &Once<usize>, name: &str, default: usize) {
+fn update_limit(krate: &ast::Crate, limit: &Once<usize>, name: Symbol, default: usize) {
     for attr in &krate.attrs {
         if !attr.check_name(name) {
             continue;

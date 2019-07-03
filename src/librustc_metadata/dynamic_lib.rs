@@ -32,7 +32,7 @@ impl DynamicLibrary {
         }
     }
 
-    /// Load a dynamic library into the global namespace (RTLD_GLOBAL on Unix)
+    /// Loads a dynamic library into the global namespace (RTLD_GLOBAL on Unix)
     /// and do it now (don't use RTLD_LAZY on Unix).
     pub fn open_global_now(filename: &Path) -> Result<DynamicLibrary, String> {
         let maybe_library = dl::open_global_now(filename.as_os_str());
@@ -74,60 +74,10 @@ impl DynamicLibrary {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use libc;
-    use std::mem;
-
-    #[test]
-    fn test_loading_atoi() {
-        if cfg!(windows) {
-            return
-        }
-
-        // The C library does not need to be loaded since it is already linked in
-        let lib = match DynamicLibrary::open(None) {
-            Err(error) => panic!("Could not load self as module: {}", error),
-            Ok(lib) => lib
-        };
-
-        let atoi: extern fn(*const libc::c_char) -> libc::c_int = unsafe {
-            match lib.symbol("atoi") {
-                Err(error) => panic!("Could not load function atoi: {}", error),
-                Ok(atoi) => mem::transmute::<*mut u8, _>(atoi)
-            }
-        };
-
-        let argument = CString::new("1383428980").unwrap();
-        let expected_result = 0x52757374;
-        let result = atoi(argument.as_ptr());
-        if result != expected_result {
-            panic!("atoi({:?}) != {} but equaled {} instead", argument,
-                   expected_result, result)
-        }
-    }
-
-    #[test]
-    fn test_errors_do_not_crash() {
-        use std::path::Path;
-
-        if !cfg!(unix) {
-            return
-        }
-
-        // Open /dev/null as a library to get an error, and make sure
-        // that only causes an error, and not a crash.
-        let path = Path::new("/dev/null");
-        match DynamicLibrary::open(Some(&path)) {
-            Err(_) => {}
-            Ok(_) => panic!("Successfully opened the empty library.")
-        }
-    }
-}
+mod tests;
 
 #[cfg(unix)]
 mod dl {
-    use libc;
     use std::ffi::{CStr, OsStr, CString};
     use std::os::unix::prelude::*;
     use std::ptr;
@@ -163,9 +113,9 @@ mod dl {
     pub fn check_for_errors_in<T, F>(f: F) -> Result<T, String> where
         F: FnOnce() -> T,
     {
-        use std::sync::{Mutex, Once, ONCE_INIT};
-        static INIT: Once = ONCE_INIT;
-        static mut LOCK: *mut Mutex<()> = 0 as *mut _;
+        use std::sync::{Mutex, Once};
+        static INIT: Once = Once::new();
+        static mut LOCK: *mut Mutex<()> = ptr::null_mut();
         unsafe {
             INIT.call_once(|| {
                 LOCK = Box::into_raw(Box::new(Mutex::new(())));

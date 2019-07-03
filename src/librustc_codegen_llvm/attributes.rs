@@ -10,20 +10,19 @@ use rustc::ty::{self, TyCtxt, PolyFnSig};
 use rustc::ty::layout::HasTyCtxt;
 use rustc::ty::query::Providers;
 use rustc_data_structures::small_c_str::SmallCStr;
-use rustc_data_structures::sync::Lrc;
 use rustc_data_structures::fx::FxHashMap;
 use rustc_target::spec::PanicStrategy;
 use rustc_codegen_ssa::traits::*;
 
-use abi::Abi;
-use attributes;
-use llvm::{self, Attribute};
-use llvm::AttributePlace::Function;
-use llvm_util;
+use crate::abi::Abi;
+use crate::attributes;
+use crate::llvm::{self, Attribute};
+use crate::llvm::AttributePlace::Function;
+use crate::llvm_util;
 pub use syntax::attr::{self, InlineAttr, OptimizeAttr};
 
-use context::CodegenCx;
-use value::Value;
+use crate::context::CodegenCx;
+use crate::value::Value;
 
 /// Mark LLVM function to use provided inline heuristic.
 #[inline]
@@ -77,9 +76,15 @@ pub fn set_instrument_function(cx: &CodegenCx<'ll, '_>, llfn: &'ll Value) {
     if cx.sess().instrument_mcount() {
         // Similar to `clang -pg` behavior. Handled by the
         // `post-inline-ee-instrument` LLVM pass.
+
+        // The function name varies on platforms.
+        // See test/CodeGen/mcount.c in clang.
+        let mcount_name = CString::new(
+            cx.sess().target.target.options.target_mcount.as_str().as_bytes()).unwrap();
+
         llvm::AddFunctionAttrStringValue(
             llfn, llvm::AttributePlace::Function,
-            const_cstr!("instrument-function-entry-inlined"), const_cstr!("mcount"));
+            const_cstr!("instrument-function-entry-inlined"), &mcount_name);
     }
 }
 
@@ -98,7 +103,7 @@ pub fn set_probestack(cx: &CodegenCx<'ll, '_>, llfn: &'ll Value) {
     }
 
     // probestack doesn't play nice either with pgo-gen.
-    if cx.sess().opts.debugging_opts.pgo_gen.is_some() {
+    if cx.sess().opts.debugging_opts.pgo_gen.enabled() {
         return;
     }
 
@@ -223,6 +228,9 @@ pub fn from_fn_attrs(
     if codegen_fn_attrs.flags.contains(CodegenFnAttrFlags::COLD) {
         Attribute::Cold.apply_llfn(Function, llfn);
     }
+    if codegen_fn_attrs.flags.contains(CodegenFnAttrFlags::FFI_RETURNS_TWICE) {
+        Attribute::ReturnsTwice.apply_llfn(Function, llfn);
+    }
     if codegen_fn_attrs.flags.contains(CodegenFnAttrFlags::NAKED) {
         naked(llfn, true);
     }
@@ -305,19 +313,19 @@ pub fn from_fn_attrs(
     }
 }
 
-pub fn provide(providers: &mut Providers) {
+pub fn provide(providers: &mut Providers<'_>) {
     providers.target_features_whitelist = |tcx, cnum| {
         assert_eq!(cnum, LOCAL_CRATE);
         if tcx.sess.opts.actually_rustdoc {
             // rustdoc needs to be able to document functions that use all the features, so
             // whitelist them all
-            Lrc::new(llvm_util::all_known_features()
-                .map(|(a, b)| (a.to_string(), b.map(|s| s.to_string())))
+            tcx.arena.alloc(llvm_util::all_known_features()
+                .map(|(a, b)| (a.to_string(), b))
                 .collect())
         } else {
-            Lrc::new(llvm_util::target_feature_whitelist(tcx.sess)
+            tcx.arena.alloc(llvm_util::target_feature_whitelist(tcx.sess)
                 .iter()
-                .map(|&(a, b)| (a.to_string(), b.map(|s| s.to_string())))
+                .map(|&(a, b)| (a.to_string(), b))
                 .collect())
         }
     };
@@ -325,7 +333,7 @@ pub fn provide(providers: &mut Providers) {
     provide_extern(providers);
 }
 
-pub fn provide_extern(providers: &mut Providers) {
+pub fn provide_extern(providers: &mut Providers<'_>) {
     providers.wasm_import_module_map = |tcx, cnum| {
         // Build up a map from DefId to a `NativeLibrary` structure, where
         // `NativeLibrary` internally contains information about
@@ -355,11 +363,11 @@ pub fn provide_extern(providers: &mut Providers) {
             }));
         }
 
-        Lrc::new(ret)
+        tcx.arena.alloc(ret)
     };
 }
 
-fn wasm_import_module(tcx: TyCtxt, id: DefId) -> Option<CString> {
+fn wasm_import_module(tcx: TyCtxt<'_>, id: DefId) -> Option<CString> {
     tcx.wasm_import_module_map(id.krate)
         .get(&id)
         .map(|s| CString::new(&s[..]).unwrap())

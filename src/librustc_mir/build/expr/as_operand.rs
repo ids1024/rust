@@ -1,12 +1,12 @@
 //! See docs in build/expr/mod.rs
 
-use build::expr::category::Category;
-use build::{BlockAnd, BlockAndExtension, Builder};
-use hair::*;
+use crate::build::expr::category::Category;
+use crate::build::{BlockAnd, BlockAndExtension, Builder};
+use crate::hair::*;
 use rustc::middle::region;
 use rustc::mir::*;
 
-impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
+impl<'a, 'tcx> Builder<'a, 'tcx> {
     /// Returns an operand suitable for use until the end of the current
     /// scope expression.
     ///
@@ -57,7 +57,7 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
         {
             let source_info = this.source_info(expr.span);
             let region_scope = (region_scope, source_info);
-            return this.in_scope(region_scope, lint_level, block, |this| {
+            return this.in_scope(region_scope, lint_level, |this| {
                 this.as_operand(block, scope, value)
             });
         }
@@ -74,7 +74,7 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
             }
             Category::Place | Category::Rvalue(..) => {
                 let operand = unpack!(block = this.as_temp(block, scope, expr, Mutability::Mut));
-                block.and(Operand::Move(Place::Local(operand)))
+                block.and(Operand::Move(Place::Base(PlaceBase::Local(operand))))
             }
         }
     }

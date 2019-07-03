@@ -2,17 +2,15 @@
 //
 // Code relating to drop glue.
 
-use std;
-
-use common::IntPredicate;
-use meth;
 use rustc::ty::{self, Ty};
-use traits::*;
+use crate::common::IntPredicate;
+use crate::meth;
+use crate::traits::*;
 
-pub fn size_and_align_of_dst<'a, 'tcx: 'a, Bx: BuilderMethods<'a, 'tcx>>(
+pub fn size_and_align_of_dst<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>>(
     bx: &mut Bx,
     t: Ty<'tcx>,
-    info: Option<Bx::Value>
+    info: Option<Bx::Value>,
 ) -> (Bx::Value, Bx::Value) {
     let layout = bx.layout_of(t);
     debug!("size_and_align_of_dst(ty={}, info={:?}): layout: {:?}",

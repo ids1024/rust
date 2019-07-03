@@ -1,9 +1,9 @@
 //! Computes moves.
 
-use borrowck::*;
-use borrowck::gather_loans::move_error::MovePlace;
-use borrowck::gather_loans::move_error::{MoveError, MoveErrorCollector};
-use borrowck::move_data::*;
+use crate::borrowck::*;
+use crate::borrowck::gather_loans::move_error::MovePlace;
+use crate::borrowck::gather_loans::move_error::{MoveError, MoveErrorCollector};
+use crate::borrowck::move_data::*;
 use rustc::middle::expr_use_visitor as euv;
 use rustc::middle::mem_categorization as mc;
 use rustc::middle::mem_categorization::Categorization;
@@ -11,16 +11,16 @@ use rustc::middle::mem_categorization::InteriorOffsetKind as Kind;
 use rustc::ty::{self, Ty};
 
 use std::rc::Rc;
-use syntax::ast;
 use syntax_pos::Span;
 use rustc::hir::*;
 use rustc::hir::Node;
+use log::debug;
 
-struct GatherMoveInfo<'c, 'tcx: 'c> {
+struct GatherMoveInfo<'c, 'tcx> {
     id: hir::ItemLocalId,
     kind: MoveKind,
     cmt: &'c mc::cmt_<'tcx>,
-    span_path_opt: Option<MovePlace<'tcx>>
+    span_path_opt: Option<MovePlace<'tcx>>,
 }
 
 /// Represents the kind of pattern
@@ -45,11 +45,11 @@ pub enum PatternSource<'tcx> {
 ///
 /// In this latter case, this function will return `PatternSource::LetDecl`
 /// with a reference to the let
-fn get_pattern_source<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>, pat: &Pat) -> PatternSource<'tcx> {
+fn get_pattern_source<'tcx>(tcx: TyCtxt<'tcx>, pat: &Pat) -> PatternSource<'tcx> {
 
-    let parent = tcx.hir().get_parent_node(pat.id);
+    let parent = tcx.hir().get_parent_node_by_hir_id(pat.hir_id);
 
-    match tcx.hir().get(parent) {
+    match tcx.hir().get_by_hir_id(parent) {
         Node::Expr(ref e) => {
             // the enclosing expression must be a `match` or something else
             assert!(match e.node {
@@ -66,11 +66,10 @@ fn get_pattern_source<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>, pat: &Pat) -> Patte
 
 pub fn gather_decl<'a, 'tcx>(bccx: &BorrowckCtxt<'a, 'tcx>,
                              move_data: &MoveData<'tcx>,
-                             var_id: ast::NodeId,
+                             var_id: hir::HirId,
                              var_ty: Ty<'tcx>) {
     let loan_path = Rc::new(LoanPath::new(LpVar(var_id), var_ty));
-    let hir_id = bccx.tcx.hir().node_to_hir_id(var_id);
-    move_data.add_move(bccx.tcx, loan_path, hir_id.local_id, Declared);
+    move_data.add_move(bccx.tcx, loan_path, var_id.local_id, Declared);
 }
 
 pub fn gather_move_from_expr<'a, 'tcx>(bccx: &BorrowckCtxt<'a, 'tcx>,
@@ -92,11 +91,13 @@ pub fn gather_move_from_expr<'a, 'tcx>(bccx: &BorrowckCtxt<'a, 'tcx>,
     gather_move(bccx, move_data, move_error_collector, move_info);
 }
 
-pub fn gather_move_from_pat<'a, 'c, 'tcx: 'c>(bccx: &BorrowckCtxt<'a, 'tcx>,
-                                              move_data: &MoveData<'tcx>,
-                                              move_error_collector: &mut MoveErrorCollector<'tcx>,
-                                              move_pat: &hir::Pat,
-                                              cmt: &'c mc::cmt_<'tcx>) {
+pub fn gather_move_from_pat<'a, 'c, 'tcx>(
+    bccx: &BorrowckCtxt<'a, 'tcx>,
+    move_data: &MoveData<'tcx>,
+    move_error_collector: &mut MoveErrorCollector<'tcx>,
+    move_pat: &hir::Pat,
+    cmt: &'c mc::cmt_<'tcx>,
+) {
     let source = get_pattern_source(bccx.tcx,move_pat);
     let pat_span_path_opt = match move_pat.node {
         PatKind::Binding(_, _, ident, _) => {
@@ -122,10 +123,12 @@ pub fn gather_move_from_pat<'a, 'c, 'tcx: 'c>(bccx: &BorrowckCtxt<'a, 'tcx>,
     gather_move(bccx, move_data, move_error_collector, move_info);
 }
 
-fn gather_move<'a, 'c, 'tcx: 'c>(bccx: &BorrowckCtxt<'a, 'tcx>,
-                         move_data: &MoveData<'tcx>,
-                         move_error_collector: &mut MoveErrorCollector<'tcx>,
-                         move_info: GatherMoveInfo<'c, 'tcx>) {
+fn gather_move<'a, 'c, 'tcx>(
+    bccx: &BorrowckCtxt<'a, 'tcx>,
+    move_data: &MoveData<'tcx>,
+    move_error_collector: &mut MoveErrorCollector<'tcx>,
+    move_info: GatherMoveInfo<'c, 'tcx>,
+) {
     debug!("gather_move(move_id={:?}, cmt={:?})",
            move_info.id, move_info.cmt);
 

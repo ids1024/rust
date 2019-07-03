@@ -4,9 +4,9 @@ use super::utils::{debug_context, span_start};
 use super::metadata::UNKNOWN_COLUMN_NUMBER;
 use rustc_codegen_ssa::debuginfo::FunctionDebugContext;
 
-use llvm;
-use llvm::debuginfo::DIScope;
-use builder::Builder;
+use crate::llvm;
+use crate::llvm::debuginfo::DIScope;
+use crate::builder::Builder;
 use rustc_codegen_ssa::traits::*;
 
 use libc::c_uint;
@@ -30,7 +30,7 @@ pub fn set_source_location<D>(
         FunctionDebugContext::RegularContext(ref data) => data
     };
 
-    let dbg_loc = if function_debug_context.source_locations_enabled.get() {
+    let dbg_loc = if function_debug_context.source_locations_enabled {
         debug!("set_source_location: {}", bx.sess().source_map().span_to_string(span));
         let loc = span_start(bx.cx(), span);
         InternalDebugLocation::new(scope.unwrap(), loc.line, loc.col.to_usize())

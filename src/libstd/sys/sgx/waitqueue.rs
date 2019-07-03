@@ -3,15 +3,15 @@
 /// This queue is used to implement condition variable and mutexes.
 ///
 /// Users of this API are expected to use the `WaitVariable<T>` type. Since
-/// that type is not `Sync`, it needs to be protected by e.g. a `SpinMutex` to
+/// that type is not `Sync`, it needs to be protected by e.g., a `SpinMutex` to
 /// allow shared access.
 ///
 /// Since userspace may send spurious wake-ups, the wakeup event state is
 /// recorded in the enclave. The wakeup event state is protected by a spinlock.
 /// The queue and associated wait state are stored in a `WaitVariable`.
 
-use ops::{Deref, DerefMut};
-use num::NonZeroUsize;
+use crate::ops::{Deref, DerefMut};
+use crate::num::NonZeroUsize;
 
 use fortanix_sgx_abi::{Tcs, EV_UNPARK, WAIT_INDEFINITE};
 use super::abi::usercalls;
@@ -121,7 +121,7 @@ impl<'a, T> Drop for WaitGuard<'a, T> {
             NotifiedTcs::Single(tcs) => Some(tcs),
             NotifiedTcs::All { .. } => None
         };
-        usercalls::send(EV_UNPARK, target_tcs).unwrap();
+        rtunwrap!(Ok, usercalls::send(EV_UNPARK, target_tcs));
     }
 }
 
@@ -136,11 +136,12 @@ impl WaitQueue {
         self.inner.is_empty()
     }
 
-    /// Add the calling thread to the WaitVariable's wait queue, then wait
+    /// Adds the calling thread to the `WaitVariable`'s wait queue, then wait
     /// until a wakeup event.
     ///
     /// This function does not return until this thread has been awoken.
-    pub fn wait<T>(mut guard: SpinMutexGuard<WaitVariable<T>>) {
+    pub fn wait<T>(mut guard: SpinMutexGuard<'_, WaitVariable<T>>) {
+        // very unsafe: check requirements of UnsafeList::push
         unsafe {
             let mut entry = UnsafeListEntry::new(SpinMutex::new(WaitEntry {
                 tcs: thread::current(),
@@ -149,10 +150,9 @@ impl WaitQueue {
             let entry = guard.queue.inner.push(&mut entry);
             drop(guard);
             while !entry.lock().wake {
-                assert_eq!(
-                    usercalls::wait(EV_UNPARK, WAIT_INDEFINITE).unwrap() & EV_UNPARK,
-                    EV_UNPARK
-                );
+                // don't panic, this would invalidate `entry` during unwinding
+                let eventset = rtunwrap!(Ok, usercalls::wait(EV_UNPARK, WAIT_INDEFINITE));
+                rtassert!(eventset & EV_UNPARK == EV_UNPARK);
             }
         }
     }
@@ -162,8 +162,8 @@ impl WaitQueue {
     ///
     /// If a waiter is found, a `WaitGuard` is returned which will notify the
     /// waiter when it is dropped.
-    pub fn notify_one<T>(mut guard: SpinMutexGuard<WaitVariable<T>>)
-        -> Result<WaitGuard<T>, SpinMutexGuard<WaitVariable<T>>>
+    pub fn notify_one<T>(mut guard: SpinMutexGuard<'_, WaitVariable<T>>)
+        -> Result<WaitGuard<'_, T>, SpinMutexGuard<'_, WaitVariable<T>>>
     {
         unsafe {
             if let Some(entry) = guard.queue.inner.pop() {
@@ -186,8 +186,8 @@ impl WaitQueue {
     ///
     /// If at least one waiter is found, a `WaitGuard` is returned which will
     /// notify all waiters when it is dropped.
-    pub fn notify_all<T>(mut guard: SpinMutexGuard<WaitVariable<T>>)
-        -> Result<WaitGuard<T>, SpinMutexGuard<WaitVariable<T>>>
+    pub fn notify_all<T>(mut guard: SpinMutexGuard<'_, WaitVariable<T>>)
+        -> Result<WaitGuard<'_, T>, SpinMutexGuard<'_, WaitVariable<T>>>
     {
         unsafe {
             let mut count = 0;
@@ -211,8 +211,8 @@ impl WaitQueue {
 /// A doubly-linked list where callers are in charge of memory allocation
 /// of the nodes in the list.
 mod unsafe_list {
-    use ptr::NonNull;
-    use mem;
+    use crate::ptr::NonNull;
+    use crate::mem;
 
     pub struct UnsafeListEntry<T> {
         next: NonNull<UnsafeListEntry<T>>,
@@ -269,7 +269,7 @@ mod unsafe_list {
                         // ,-------> /---------\ next ---,
                         // |         |head_tail|         |
                         // `--- prev \---------/ <-------`
-                        assert_eq!(self.head_tail.as_ref().prev, first);
+                        rtassert!(self.head_tail.as_ref().prev == first);
                         true
                     } else {
                         false
@@ -285,7 +285,9 @@ mod unsafe_list {
         /// # Safety
         ///
         /// The entry must remain allocated until the entry is removed from the
-        /// list AND the caller who popped is done using the entry.
+        /// list AND the caller who popped is done using the entry. Special
+        /// care must be taken in the caller of `push` to ensure unwinding does
+        /// not destroy the stack frame containing the entry.
         pub unsafe fn push<'a>(&mut self, entry: &'a mut UnsafeListEntry<T>) -> &'a T {
             self.init();
 
@@ -303,6 +305,7 @@ mod unsafe_list {
             entry.as_mut().prev = prev_tail;
             entry.as_mut().next = self.head_tail;
             prev_tail.as_mut().next = entry;
+            // unwrap ok: always `Some` on non-dummy entries
             (*entry.as_ptr()).value.as_ref().unwrap()
         }
 
@@ -333,6 +336,7 @@ mod unsafe_list {
                 second.as_mut().prev = self.head_tail;
                 first.as_mut().next = NonNull::dangling();
                 first.as_mut().prev = NonNull::dangling();
+                // unwrap ok: always `Some` on non-dummy entries
                 Some((*first.as_ptr()).value.as_ref().unwrap())
             }
         }
@@ -341,7 +345,7 @@ mod unsafe_list {
     #[cfg(test)]
     mod tests {
         use super::*;
-        use cell::Cell;
+        use crate::cell::Cell;
 
         unsafe fn assert_empty<T>(list: &mut UnsafeList<T>) {
             assert!(list.pop().is_none(), "assertion failed: list is not empty");
@@ -404,9 +408,9 @@ mod unsafe_list {
 /// Trivial spinlock-based implementation of `sync::Mutex`.
 // FIXME: Perhaps use Intel TSX to avoid locking?
 mod spin_mutex {
-    use cell::UnsafeCell;
-    use sync::atomic::{AtomicBool, Ordering, spin_loop_hint};
-    use ops::{Deref, DerefMut};
+    use crate::cell::UnsafeCell;
+    use crate::sync::atomic::{AtomicBool, Ordering, spin_loop_hint};
+    use crate::ops::{Deref, DerefMut};
 
     #[derive(Default)]
     pub struct SpinMutex<T> {
@@ -433,7 +437,7 @@ mod spin_mutex {
         }
 
         #[inline(always)]
-        pub fn lock(&self) -> SpinMutexGuard<T> {
+        pub fn lock(&self) -> SpinMutexGuard<'_, T> {
             loop {
                 match self.try_lock() {
                     None => while self.lock.load(Ordering::Relaxed) {
@@ -445,7 +449,7 @@ mod spin_mutex {
         }
 
         #[inline(always)]
-        pub fn try_lock(&self) -> Option<SpinMutexGuard<T>> {
+        pub fn try_lock(&self) -> Option<SpinMutexGuard<'_, T>> {
             if !self.lock.compare_and_swap(false, true, Ordering::Acquire) {
                 Some(SpinMutexGuard {
                     mutex: self,
@@ -496,8 +500,9 @@ mod spin_mutex {
         #![allow(deprecated)]
 
         use super::*;
-        use sync::Arc;
-        use thread;
+        use crate::sync::Arc;
+        use crate::thread;
+        use crate::time::{SystemTime, Duration};
 
         #[test]
         fn sleep() {
@@ -507,7 +512,13 @@ mod spin_mutex {
             let t1 = thread::spawn(move || {
                 *mutex2.lock() = 1;
             });
-            thread::sleep_ms(50);
+
+            // "sleep" for 50ms
+            // FIXME: https://github.com/fortanix/rust-sgx/issues/31
+            let start = SystemTime::now();
+            let max = Duration::from_millis(50);
+            while start.elapsed().unwrap() < max {}
+
             assert_eq!(*guard, 0);
             drop(guard);
             t1.join().unwrap();
@@ -519,8 +530,8 @@ mod spin_mutex {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sync::Arc;
-    use thread;
+    use crate::sync::Arc;
+    use crate::thread;
 
     #[test]
     fn queue() {
@@ -530,7 +541,8 @@ mod tests {
         let locked = wq.lock();
 
         let t1 = thread::spawn(move || {
-            assert!(WaitQueue::notify_one(wq2.lock()).is_none())
+            // if we obtain the lock, the main thread should be waiting
+            assert!(WaitQueue::notify_one(wq2.lock()).is_ok());
         });
 
         WaitQueue::wait(locked);

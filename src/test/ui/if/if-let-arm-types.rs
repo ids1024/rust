@@ -1,10 +1,12 @@
 fn main() {
-    if let Some(b) = None { //~ ERROR: `if let` arms have incompatible types
-        //~^ expected (), found integer
-        //~| expected type `()`
-        //~| found type `{integer}`
+    if let Some(b) = None {
+        //~^ NOTE if and else have incompatible types
         ()
+        //~^ NOTE expected because of this
     } else {
         1
     };
+    //~^^ ERROR: if and else have incompatible types
+    //~| NOTE expected (), found integer
+    //~| NOTE expected type `()`
 }

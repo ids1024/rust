@@ -10,15 +10,15 @@ pub use self::MethodError::*;
 pub use self::CandidateSource::*;
 pub use self::suggest::{SelfSource, TraitInfo};
 
-use check::FnCtxt;
+use crate::check::FnCtxt;
+use crate::namespace::Namespace;
 use errors::{Applicability, DiagnosticBuilder};
-use namespace::Namespace;
 use rustc_data_structures::sync::Lrc;
 use rustc::hir;
-use rustc::hir::def::Def;
+use rustc::hir::def::{CtorOf, DefKind};
 use rustc::hir::def_id::DefId;
 use rustc::traits;
-use rustc::ty::subst::Substs;
+use rustc::ty::subst::{InternalSubsts, SubstsRef};
 use rustc::ty::{self, Ty, ToPredicate, ToPolyTraitRef, TraitRef, TypeFoldable};
 use rustc::ty::GenericParamDefKind;
 use rustc::ty::subst::Subst;
@@ -29,7 +29,7 @@ use syntax_pos::Span;
 use crate::{check_type_alias_enum_variants_enabled};
 use self::probe::{IsSuggestion, ProbeScope};
 
-pub fn provide(providers: &mut ty::query::Providers) {
+pub fn provide(providers: &mut ty::query::Providers<'_>) {
     suggest::provide(providers);
     probe::provide(providers);
 }
@@ -38,7 +38,7 @@ pub fn provide(providers: &mut ty::query::Providers) {
 pub struct MethodCallee<'tcx> {
     /// Impl method ID, for inherent methods, or trait method ID, otherwise.
     pub def_id: DefId,
-    pub substs: &'tcx Substs<'tcx>,
+    pub substs: SubstsRef<'tcx>,
 
     /// Instantiated method signature, i.e., it has been
     /// substituted, normalized, and has had late-bound
@@ -53,9 +53,9 @@ pub enum MethodError<'tcx> {
     // Multiple methods might apply.
     Ambiguity(Vec<CandidateSource>),
 
-    // Found an applicable method, but it is not visible. The second argument contains a list of
+    // Found an applicable method, but it is not visible. The third argument contains a list of
     // not-in-scope traits which may work.
-    PrivateMatch(Def, Vec<DefId>),
+    PrivateMatch(DefKind, DefId, Vec<DefId>),
 
     // Found a `Self: Sized` bound where `Self` is a trait object, also the caller may have
     // forgotten to import a trait.
@@ -71,7 +71,7 @@ pub struct NoMatchData<'tcx> {
     pub static_candidates: Vec<CandidateSource>,
     pub unsatisfied_predicates: Vec<TraitRef<'tcx>>,
     pub out_of_scope_traits: Vec<DefId>,
-    pub lev_candidate: Option<ty::AssociatedItem>,
+    pub lev_candidate: Option<ty::AssocItem>,
     pub mode: probe::Mode,
 }
 
@@ -79,7 +79,7 @@ impl<'tcx> NoMatchData<'tcx> {
     pub fn new(static_candidates: Vec<CandidateSource>,
                unsatisfied_predicates: Vec<TraitRef<'tcx>>,
                out_of_scope_traits: Vec<DefId>,
-               lev_candidate: Option<ty::AssociatedItem>,
+               lev_candidate: Option<ty::AssocItem>,
                mode: probe::Mode)
                -> Self {
         NoMatchData {
@@ -100,12 +100,12 @@ pub enum CandidateSource {
     TraitSource(DefId /* trait id */),
 }
 
-impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
+impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
     /// Determines whether the type `self_ty` supports a method name `method_name` or not.
     pub fn method_exists(&self,
                          method_name: ast::Ident,
                          self_ty: Ty<'tcx>,
-                         call_expr_id: ast::NodeId,
+                         call_expr_id: hir::HirId,
                          allow_private: bool)
                          -> bool {
         let mode = probe::Mode::MethodCall;
@@ -124,14 +124,14 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
         }
     }
 
-    /// Add a suggestion to call the given method to the provided diagnostic.
+    /// Adds a suggestion to call the given method to the provided diagnostic.
     crate fn suggest_method_call(
         &self,
         err: &mut DiagnosticBuilder<'a>,
         msg: &str,
         method_name: ast::Ident,
         self_ty: Ty<'tcx>,
-        call_expr_id: ast::NodeId,
+        call_expr_id: hir::HirId,
     ) {
         let has_params = self
             .probe_for_name(
@@ -157,7 +157,7 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
             (format!("{}()", method_name), Applicability::MaybeIncorrect)
         };
 
-        err.span_suggestion_with_applicability(method_name.span, msg, suggestion, applicability);
+        err.span_suggestion(method_name.span, msg, suggestion, applicability);
     }
 
     /// Performs method lookup. If lookup is successful, it will return the callee
@@ -174,13 +174,14 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
     /// * `self_ty`:               the (unadjusted) type of the self expression (`foo`)
     /// * `supplied_method_types`: the explicit method type parameters, if any (`T1..Tn`)
     /// * `self_expr`:             the self expression (`foo`)
-    pub fn lookup_method(&self,
-                         self_ty: Ty<'tcx>,
-                         segment: &hir::PathSegment,
-                         span: Span,
-                         call_expr: &'gcx hir::Expr,
-                         self_expr: &'gcx hir::Expr)
-                         -> Result<MethodCallee<'tcx>, MethodError<'tcx>> {
+    pub fn lookup_method(
+        &self,
+        self_ty: Ty<'tcx>,
+        segment: &hir::PathSegment,
+        span: Span,
+        call_expr: &'tcx hir::Expr,
+        self_expr: &'tcx hir::Expr,
+    ) -> Result<MethodCallee<'tcx>, MethodError<'tcx>> {
         debug!("lookup(method_name={}, self_ty={:?}, call_expr={:?}, self_expr={:?})",
                segment.ident,
                self_ty,
@@ -195,14 +196,14 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
             ProbeScope::TraitsInScope
         )?;
 
-        if let Some(import_id) = pick.import_id {
-            let import_def_id = self.tcx.hir().local_def_id(import_id);
+        for import_id in &pick.import_ids {
+            let import_def_id = self.tcx.hir().local_def_id_from_hir_id(*import_id);
             debug!("used_trait_import: {:?}", import_def_id);
             Lrc::get_mut(&mut self.tables.borrow_mut().used_trait_imports)
                 .unwrap().insert(import_def_id);
         }
 
-        self.tcx.check_stability(pick.item.def_id, Some(call_expr.id), span);
+        self.tcx.check_stability(pick.item.def_id, Some(call_expr.hir_id), span);
 
         let result = self.confirm_method(
             span,
@@ -245,28 +246,29 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
         Ok(result.callee)
     }
 
-    fn lookup_probe(&self,
-                    span: Span,
-                    method_name: ast::Ident,
-                    self_ty: Ty<'tcx>,
-                    call_expr: &'gcx hir::Expr,
-                    scope: ProbeScope)
-                    -> probe::PickResult<'tcx> {
+    fn lookup_probe(
+        &self,
+        span: Span,
+        method_name: ast::Ident,
+        self_ty: Ty<'tcx>,
+        call_expr: &'tcx hir::Expr,
+        scope: ProbeScope,
+    ) -> probe::PickResult<'tcx> {
         let mode = probe::Mode::MethodCall;
-        let self_ty = self.resolve_type_vars_if_possible(&self_ty);
+        let self_ty = self.resolve_vars_if_possible(&self_ty);
         self.probe_for_name(span, mode, method_name, IsSuggestion(false),
-                            self_ty, call_expr.id, scope)
+                            self_ty, call_expr.hir_id, scope)
     }
 
     /// `lookup_method_in_trait` is used for overloaded operators.
     /// It does a very narrow slice of what the normal probe/confirm path does.
     /// In particular, it doesn't really do any probing: it simply constructs
-    /// an obligation for a particular trait with the given self-type and checks
+    /// an obligation for a particular trait with the given self type and checks
     /// whether that trait is implemented.
-    ///
-    /// FIXME(#18741): it seems likely that we can consolidate some of this
-    /// code with the other method-lookup code. In particular, the second half
-    /// of this method is basically the same as confirmation.
+    //
+    // FIXME(#18741): it seems likely that we can consolidate some of this
+    // code with the other method-lookup code. In particular, the second half
+    // of this method is basically the same as confirmation.
     pub fn lookup_method_in_trait(&self,
                                   span: Span,
                                   m_name: ast::Ident,
@@ -281,10 +283,10 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
                trait_def_id);
 
         // Construct a trait-reference `self_ty : Trait<input_tys>`
-        let substs = Substs::for_item(self.tcx, trait_def_id, |param, _| {
+        let substs = InternalSubsts::for_item(self.tcx, trait_def_id, |param, _| {
             match param.kind {
-                GenericParamDefKind::Lifetime => {}
-                GenericParamDefKind::Type {..} => {
+                GenericParamDefKind::Lifetime | GenericParamDefKind::Const => {}
+                GenericParamDefKind::Type { .. } => {
                     if param.index == 0 {
                         return self_ty.into();
                     } else if let Some(ref input_types) = opt_input_types {
@@ -399,8 +401,8 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
         span: Span,
         method_name: ast::Ident,
         self_ty: Ty<'tcx>,
-        expr_id: ast::NodeId
-    ) -> Result<Def, MethodError<'tcx>> {
+        expr_id: hir::HirId
+    ) -> Result<(DefKind, DefId), MethodError<'tcx>> {
         debug!(
             "resolve_ufcs: method_name={:?} self_ty={:?} expr_id={:?}",
             method_name, self_ty, expr_id,
@@ -417,9 +419,16 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
                 if let Some(variant_def) = variant_def {
                     check_type_alias_enum_variants_enabled(tcx, span);
 
-                    let def = Def::VariantCtor(variant_def.did, variant_def.ctor_kind);
-                    tcx.check_stability(def.def_id(), Some(expr_id), span);
-                    return Ok(def);
+                    // Braced variants generate unusable names in value namespace (reserved for
+                    // possible future use), so variants resolved as associated items may refer to
+                    // them as well. It's ok to use the variant's id as a ctor id since an
+                    // error will be reported on any use of such resolution anyway.
+                    let ctor_def_id = variant_def.ctor_def_id.unwrap_or(variant_def.def_id);
+                    tcx.check_stability(ctor_def_id, Some(expr_id), span);
+                    return Ok((
+                        DefKind::Ctor(CtorOf::Variant, variant_def.ctor_kind),
+                        ctor_def_id,
+                    ));
                 }
             }
         }
@@ -427,23 +436,23 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
         let pick = self.probe_for_name(span, probe::Mode::Path, method_name, IsSuggestion(false),
                                        self_ty, expr_id, ProbeScope::TraitsInScope)?;
         debug!("resolve_ufcs: pick={:?}", pick);
-        if let Some(import_id) = pick.import_id {
-            let import_def_id = tcx.hir().local_def_id(import_id);
+        for import_id in pick.import_ids {
+            let import_def_id = tcx.hir().local_def_id_from_hir_id(import_id);
             debug!("resolve_ufcs: used_trait_import: {:?}", import_def_id);
             Lrc::get_mut(&mut self.tables.borrow_mut().used_trait_imports)
                 .unwrap().insert(import_def_id);
         }
 
-        let def = pick.item.def();
-        debug!("resolve_ufcs: def={:?}", def);
-        tcx.check_stability(def.def_id(), Some(expr_id), span);
-        Ok(def)
+        let def_kind = pick.item.def_kind();
+        debug!("resolve_ufcs: def_kind={:?}, def_id={:?}", def_kind, pick.item.def_id);
+        tcx.check_stability(pick.item.def_id, Some(expr_id), span);
+        Ok((def_kind, pick.item.def_id))
     }
 
-    /// Find item with name `item_name` defined in impl/trait `def_id`
+    /// Finds item with name `item_name` defined in impl/trait `def_id`
     /// and return it, or `None`, if no such item was defined there.
     pub fn associated_item(&self, def_id: DefId, item_name: ast::Ident, ns: Namespace)
-                           -> Option<ty::AssociatedItem> {
+                           -> Option<ty::AssocItem> {
         self.tcx.associated_items(def_id).find(|item| {
             Namespace::from(item.kind) == ns &&
             self.tcx.hygienic_eq(item_name, item.ident, def_id)

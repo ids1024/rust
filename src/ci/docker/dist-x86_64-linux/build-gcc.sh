@@ -3,9 +3,9 @@ set -ex
 
 source shared.sh
 
-GCC=4.8.5
+GCC=5.5.0
 
-curl https://ftp.gnu.org/gnu/gcc/gcc-$GCC/gcc-$GCC.tar.bz2 | tar xjf -
+curl https://ftp.gnu.org/gnu/gcc/gcc-$GCC/gcc-$GCC.tar.xz | xzcat | tar xf -
 cd gcc-$GCC
 
 # FIXME(#49246): Remove the `sed` below.
@@ -32,6 +32,7 @@ hide_output ../gcc-$GCC/configure \
     --enable-languages=c,c++
 hide_output make -j10
 hide_output make install
+ln -s gcc /rustroot/bin/cc
 
 cd ..
 rm -rf gcc-build

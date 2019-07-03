@@ -7,7 +7,7 @@
 //! primitives](#primitives), [standard macros](#macros), [I/O] and
 //! [multithreading], among [many other things][other].
 //!
-//! `std` is available to all Rust crates by default. Therefore the
+//! `std` is available to all Rust crates by default. Therefore, the
 //! standard library can be accessed in [`use`] statements through the path
 //! `std`, as in [`use std::env`].
 //!
@@ -187,7 +187,7 @@
 //! [`sync`]: sync/index.html
 //! [`thread`]: thread/index.html
 //! [`use std::env`]: env/index.html
-//! [`use`]: ../book/ch07-02-modules-and-use-to-control-scope-and-privacy.html#the-use-keyword-to-bring-paths-into-a-scope
+//! [`use`]: ../book/ch07-02-defining-modules-to-control-scope-and-privacy.html
 //! [crates.io]: https://crates.io
 //! [deref-coercions]: ../book/ch15-02-deref.html#implicit-deref-coercions-with-functions-and-methods
 //! [files]: fs/struct.File.html
@@ -196,9 +196,7 @@
 //! [primitive types]: ../book/ch03-02-data-types.html
 
 #![stable(feature = "rust1", since = "1.0.0")]
-#![doc(html_logo_url = "https://www.rust-lang.org/logos/rust-logo-128x128-blk-v2.png",
-       html_favicon_url = "https://doc.rust-lang.org/favicon.ico",
-       html_root_url = "https://doc.rust-lang.org/nightly/",
+#![doc(html_root_url = "https://doc.rust-lang.org/nightly/",
        html_playground_url = "https://play.rust-lang.org/",
        issue_tracker_base_url = "https://github.com/rust-lang/rust/issues/",
        test(no_crate_inject, attr(deny(warnings))),
@@ -207,9 +205,13 @@
 // Don't link to std. We are std.
 #![no_std]
 
-#![deny(missing_docs)]
-#![deny(intra_doc_link_resolution_failure)]
-#![deny(missing_debug_implementations)]
+//#![warn(deprecated_in_future)] // FIXME: std still has quite a few uses of `mem::uninitialized`
+#![warn(missing_docs)]
+#![warn(missing_debug_implementations)]
+#![deny(intra_doc_link_resolution_failure)] // rustdoc is run without -D warnings
+
+#![deny(rust_2018_idioms)]
+#![allow(explicit_outlives_requirements)]
 
 // Tell the compiler to link to either panic_abort or panic_unwind
 #![needs_panic_runtime]
@@ -217,43 +219,55 @@
 // std may use features in a platform-specific way
 #![allow(unused_features)]
 
+#![cfg_attr(test, feature(print_internals, set_stdio, test, update_panic_count))]
+#![cfg_attr(all(target_vendor = "fortanix", target_env = "sgx"),
+            feature(global_asm, slice_index_methods,
+                    decl_macro, coerce_unsized, sgx_platform, ptr_wrapping_offset_from))]
+#![cfg_attr(all(test, target_vendor = "fortanix", target_env = "sgx"),
+            feature(fixed_size_array, maybe_uninit_extra))]
+
 // std is implemented with unstable features, many of which are internal
 // compiler details that will never be stable
-#![cfg_attr(test, feature(test, update_panic_count))]
-#![feature(alloc)]
+// NB: the following list is sorted to minimize merge conflicts.
 #![feature(alloc_error_handler)]
+#![feature(alloc_layout_extra)]
 #![feature(allocator_api)]
 #![feature(allocator_internals)]
 #![feature(allow_internal_unsafe)]
 #![feature(allow_internal_unstable)]
-#![feature(align_offset)]
 #![feature(arbitrary_self_types)]
 #![feature(array_error_internals)]
 #![feature(asm)]
+#![feature(bind_by_move_pattern_guards)]
 #![feature(box_syntax)]
 #![feature(c_variadic)]
 #![feature(cfg_target_has_atomic)]
 #![feature(cfg_target_thread_local)]
-#![cfg_attr(stage0, feature(cfg_target_vendor))]
 #![feature(char_error_internals)]
+#![feature(checked_duration_since)]
+#![feature(clamp)]
 #![feature(compiler_builtins_lib)]
 #![feature(concat_idents)]
-#![cfg_attr(stage0, feature(const_int_ops))]
-#![cfg_attr(stage0, feature(const_ip))]
-#![feature(const_raw_ptr_deref)]
 #![feature(const_cstr_unchecked)]
+#![feature(const_raw_ptr_deref)]
 #![feature(core_intrinsics)]
+#![feature(doc_alias)]
+#![feature(doc_cfg)]
+#![feature(doc_keyword)]
+#![feature(doc_masked)]
+#![feature(doc_spotlight)]
 #![feature(dropck_eyepatch)]
 #![feature(duration_constants)]
 #![feature(exact_size_is_empty)]
+#![feature(exhaustive_patterns)]
 #![feature(external_doc)]
-#![feature(fixed_size_array)]
 #![feature(fn_traits)]
 #![feature(fnbox)]
-#![feature(futures_api)]
 #![feature(generator_trait)]
+#![feature(hash_raw_entry)]
 #![feature(hashmap_internals)]
 #![feature(int_error_internals)]
+#![feature(int_error_matching)]
 #![feature(integer_atomics)]
 #![feature(lang_items)]
 #![feature(libc)]
@@ -262,47 +276,36 @@
 #![feature(needs_panic_runtime)]
 #![feature(never_type)]
 #![feature(nll)]
-#![feature(exhaustive_patterns)]
+#![feature(non_exhaustive)]
 #![feature(on_unimplemented)]
 #![feature(optin_builtin_traits)]
+#![feature(panic_info_message)]
 #![feature(panic_internals)]
 #![feature(panic_unwind)]
 #![feature(prelude_import)]
 #![feature(ptr_internals)]
 #![feature(raw)]
-#![feature(hash_raw_entry)]
+#![feature(renamed_spin_loop)]
 #![feature(rustc_attrs)]
 #![feature(rustc_const_unstable)]
-#![feature(std_internals)]
-#![feature(stdsimd)]
+#![feature(rustc_private)]
 #![feature(shrink_to)]
 #![feature(slice_concat_ext)]
 #![feature(slice_internals)]
 #![feature(slice_patterns)]
 #![feature(staged_api)]
+#![feature(std_internals)]
+#![feature(stdsimd)]
 #![feature(stmt_expr_attributes)]
 #![feature(str_internals)]
-#![feature(renamed_spin_loop)]
-#![feature(rustc_private)]
 #![feature(thread_local)]
+#![feature(todo_macro)]
 #![feature(toowned_clone_into)]
-#![feature(try_from)]
 #![feature(try_reserve)]
 #![feature(unboxed_closures)]
 #![feature(untagged_unions)]
 #![feature(unwind_attributes)]
-#![feature(doc_cfg)]
-#![feature(doc_masked)]
-#![feature(doc_spotlight)]
-#![feature(doc_alias)]
-#![feature(doc_keyword)]
-#![feature(panic_info_message)]
-#![feature(non_exhaustive)]
-#![feature(alloc_layout_extra)]
-#![feature(maybe_uninit)]
-#![cfg_attr(all(target_vendor = "fortanix", target_env = "sgx"),
-            feature(global_asm, range_contains, slice_index_methods,
-                    decl_macro, coerce_unsized, sgx_platform, ptr_wrapping_offset_from))]
+// NB: the above list is sorted to minimize merge conflicts.
 
 #![default_lib_allocator]
 
@@ -314,28 +317,30 @@ use prelude::v1::*;
 
 // Access to Bencher, etc.
 #[cfg(test)] extern crate test;
-#[cfg(test)] extern crate rand;
 
 // Re-export a few macros from core
 #[stable(feature = "rust1", since = "1.0.0")]
 pub use core::{assert_eq, assert_ne, debug_assert, debug_assert_eq, debug_assert_ne};
 #[stable(feature = "rust1", since = "1.0.0")]
-pub use core::{unreachable, unimplemented, write, writeln, try};
+pub use core::{unreachable, unimplemented, write, writeln, r#try, todo};
 
 #[allow(unused_imports)] // macros from `alloc` are not used on all platforms
 #[macro_use]
 extern crate alloc as alloc_crate;
 #[doc(masked)]
+#[allow(unused_extern_crates)]
 extern crate libc;
-extern crate rustc_demangle;
 
 // We always need an unwinder currently for backtraces
 #[doc(masked)]
 #[allow(unused_extern_crates)]
 extern crate unwind;
 
-#[cfg(feature = "backtrace")]
-extern crate backtrace_sys;
+// Only needed for now for the `std_detect` module until that crate changes to
+// use `cfg_if::cfg_if!`
+#[macro_use]
+#[cfg(not(test))]
+extern crate cfg_if;
 
 // During testing, this crate is not actually the "real" std library, but rather
 // it links to the real std library, which was compiled from this same source
@@ -344,12 +349,6 @@ extern crate backtrace_sys;
 // _not_ the globals used by "real" std. So this import, defined only during
 // testing gives test-std access to real-std lang items and globals. See #2912
 #[cfg(test)] extern crate std as realstd;
-
-#[cfg(all(target_vendor = "fortanix", target_env = "sgx"))]
-#[macro_use]
-#[allow(unused_imports)] // FIXME: without `#[macro_use]`, get error: “cannot
-                         // determine resolution for the macro `usercalls_asm`”
-extern crate fortanix_sgx_abi;
 
 // The standard macros that are not built-in to the compiler.
 #[macro_use]
@@ -361,6 +360,9 @@ pub mod prelude;
 // Public module declarations and re-exports
 #[stable(feature = "rust1", since = "1.0.0")]
 pub use core::any;
+#[stable(feature = "simd_arch", since = "1.27.0")]
+#[doc(no_inline)]
+pub use core::arch;
 #[stable(feature = "rust1", since = "1.0.0")]
 pub use core::cell;
 #[stable(feature = "rust1", since = "1.0.0")]
@@ -439,6 +441,8 @@ pub use core::char;
 pub use core::u128;
 #[stable(feature = "core_hint", since = "1.27.0")]
 pub use core::hint;
+#[stable(feature = "core_array", since = "1.36.0")]
+pub use core::array;
 
 pub mod f32;
 pub mod f64;
@@ -461,20 +465,15 @@ pub mod process;
 pub mod sync;
 pub mod time;
 
-#[unstable(feature = "futures_api",
-           reason = "futures in libcore are unstable",
-           issue = "50547")]
+#[stable(feature = "futures_api", since = "1.36.0")]
 pub mod task {
     //! Types and Traits for working with asynchronous tasks.
     #[doc(inline)]
+    #[stable(feature = "futures_api", since = "1.36.0")]
     pub use core::task::*;
-    #[doc(inline)]
-    pub use alloc_crate::task::*;
 }
 
-#[unstable(feature = "futures_api",
-           reason = "futures in libcore are unstable",
-           issue = "50547")]
+#[stable(feature = "futures_api", since = "1.36.0")]
 pub mod future;
 
 // Platform-abstraction modules
@@ -492,29 +491,22 @@ mod memchr;
 // compiler
 pub mod rt;
 
-// Pull in the `stdsimd` crate directly into libstd. This is the same as
-// libcore's arch/simd modules where the source of truth here is in a different
-// repository, but we pull things in here manually to get it into libstd.
+// Pull in the `std_detect` crate directly into libstd. The contents of
+// `std_detect` are in a different repository: rust-lang-nursery/stdsimd.
 //
-// Note that the #[cfg] here is intended to do two things. First it allows us to
-// change the rustc implementation of intrinsics in stage0 by not compiling simd
-// intrinsics in stage0. Next it doesn't compile anything in test mode as
-// stdsimd has tons of its own tests which we don't want to run.
-#[path = "../stdsimd/stdsimd/mod.rs"]
+// `std_detect` depends on libstd, but the contents of this module are
+// set up in such a way that directly pulling it here works such that the
+// crate uses the this crate as its libstd.
+#[path = "../stdsimd/crates/std_detect/src/mod.rs"]
 #[allow(missing_debug_implementations, missing_docs, dead_code)]
 #[unstable(feature = "stdsimd", issue = "48556")]
 #[cfg(not(test))]
-mod stdsimd;
+mod std_detect;
 
-// A "fake" module needed by the `stdsimd` module to compile, not actually
-// exported though.
-mod coresimd {
-    pub use core::arch;
-}
-
-#[stable(feature = "simd_arch", since = "1.27.0")]
+#[doc(hidden)]
+#[unstable(feature = "stdsimd", issue = "48556")]
 #[cfg(not(test))]
-pub use stdsimd::arch;
+pub use std_detect::detect;
 
 // Include a number of private modules that exist solely to provide
 // the rustdoc documentation for primitive types. Using `include!`

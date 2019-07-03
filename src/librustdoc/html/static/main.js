@@ -68,7 +68,8 @@ if (!DOMTokenList.prototype.remove) {
                      "keyword",
                      "existential",
                      "attr",
-                     "derive"];
+                     "derive",
+                     "traitalias"];
 
     var search_input = document.getElementsByClassName("search-input")[0];
 
@@ -78,8 +79,6 @@ if (!DOMTokenList.prototype.remove) {
     // 1 for "In Parameters"
     // 2 for "In Return Types"
     var currentTab = 0;
-
-    var themesWidth = null;
 
     var titleBeforeSearch = document.title;
 
@@ -150,8 +149,7 @@ if (!DOMTokenList.prototype.remove) {
     }
 
     function browserSupportsHistoryApi() {
-        return document.location.protocol != "file:" &&
-          window.history && typeof window.history.pushState === "function";
+        return window.history && typeof window.history.pushState === "function";
     }
 
     var main = document.getElementById("main");
@@ -164,8 +162,15 @@ if (!DOMTokenList.prototype.remove) {
         var i, from, to, match = window.location.hash.match(/^#?(\d+)(?:-(\d+))?$/);
         if (match) {
             from = parseInt(match[1], 10);
-            to = Math.min(50000, parseInt(match[2] || match[1], 10));
-            from = Math.min(from, to);
+            to = from;
+            if (typeof match[2] !== "undefined") {
+                to = parseInt(match[2], 10);
+            }
+            if (to < from) {
+                var tmp = to;
+                to = from;
+                from = tmp;
+            }
             elem = document.getElementById(from);
             if (!elem) {
                 return;
@@ -182,7 +187,11 @@ if (!DOMTokenList.prototype.remove) {
                 });
             });
             for (i = from; i <= to; ++i) {
-                addClass(document.getElementById(i), "line-highlighted");
+                elem = document.getElementById(i);
+                if (!elem) {
+                    break;
+                }
+                addClass(elem, "line-highlighted");
             }
         } else if (ev !== null && search && !hasClass(search, "hidden") && ev.newURL) {
             addClass(search, "hidden");
@@ -241,7 +250,7 @@ if (!DOMTokenList.prototype.remove) {
         return String.fromCharCode(c);
     }
 
-    function displayHelp(display, ev) {
+    function displayHelp(display, ev, help) {
         if (display === true) {
             if (hasClass(help, "hidden")) {
                 ev.preventDefault();
@@ -259,7 +268,7 @@ if (!DOMTokenList.prototype.remove) {
         hideModal();
         var search = document.getElementById("search");
         if (hasClass(help, "hidden") === false) {
-            displayHelp(false, ev);
+            displayHelp(false, ev, help);
         } else if (hasClass(search, "hidden") === false) {
             ev.preventDefault();
             addClass(search, "hidden");
@@ -290,7 +299,7 @@ if (!DOMTokenList.prototype.remove) {
 
             case "s":
             case "S":
-                displayHelp(false, ev);
+                displayHelp(false, ev, help);
                 hideModal();
                 ev.preventDefault();
                 focusSearchBar();
@@ -305,7 +314,7 @@ if (!DOMTokenList.prototype.remove) {
             case "?":
                 if (ev.shiftKey) {
                     hideModal();
-                    displayHelp(true, ev);
+                    displayHelp(true, ev, help);
                 }
                 break;
             }
@@ -655,7 +664,7 @@ if (!DOMTokenList.prototype.remove) {
                                 return MAX_LEV_DISTANCE + 1;
                             }
                         }
-                        return lev_distance;//Math.ceil(total / done);
+                        return Math.ceil(total / done);
                     }
                 }
                 return MAX_LEV_DISTANCE + 1;
@@ -716,7 +725,10 @@ if (!DOMTokenList.prototype.remove) {
                 }
                 lev_distance = Math.min(levenshtein(obj[NAME], val.name), lev_distance);
                 if (lev_distance <= MAX_LEV_DISTANCE) {
-                    lev_distance = Math.min(checkGenerics(obj, val), lev_distance);
+                    // The generics didn't match but the name kinda did so we give it
+                    // a levenshtein distance value that isn't *this* good so it goes
+                    // into the search results but not too high.
+                    lev_distance = Math.ceil((checkGenerics(obj, val) + lev_distance) / 2);
                 } else if (obj.length > GENERICS_DATA && obj[GENERICS_DATA].length > 0) {
                     // We can check if the type we're looking for is inside the generics!
                     var olength = obj[GENERICS_DATA].length;
@@ -754,13 +766,26 @@ if (!DOMTokenList.prototype.remove) {
                 var lev_distance = MAX_LEV_DISTANCE + 1;
 
                 if (obj && obj.type && obj.type.length > OUTPUT_DATA) {
-                    var tmp = checkType(obj.type[OUTPUT_DATA], val, literalSearch);
-                    if (literalSearch === true && tmp === true) {
-                        return true;
+                    var ret = obj.type[OUTPUT_DATA];
+                    if (!obj.type[OUTPUT_DATA].length) {
+                        ret = [ret];
                     }
-                    lev_distance = Math.min(tmp, lev_distance);
-                    if (lev_distance === 0) {
-                        return 0;
+                    for (var x = 0; x < ret.length; ++x) {
+                        var r = ret[x];
+                        if (typeof r === "string") {
+                            r = [r];
+                        }
+                        var tmp = checkType(r, val, literalSearch);
+                        if (literalSearch === true) {
+                            if (tmp === true) {
+                                return true;
+                            }
+                            continue;
+                        }
+                        lev_distance = Math.min(tmp, lev_distance);
+                        if (lev_distance === 0) {
+                            return 0;
+                        }
                     }
                 }
                 return literalSearch === true ? false : lev_distance;
@@ -916,10 +941,10 @@ if (!DOMTokenList.prototype.remove) {
                     returned = checkReturned(ty, output, true);
                     if (output.name === "*" || returned === true) {
                         in_args = false;
-                        var module = false;
+                        var is_module = false;
 
                         if (input === "*") {
-                            module = true;
+                            is_module = true;
                         } else {
                             var allFound = true;
                             for (var it = 0; allFound === true && it < inputs.length; it++) {
@@ -941,7 +966,7 @@ if (!DOMTokenList.prototype.remove) {
                                 dontValidate: true,
                             };
                         }
-                        if (module === true) {
+                        if (is_module === true) {
                             results[fullId] = {
                                 id: i,
                                 index: -1,
@@ -1059,6 +1084,10 @@ if (!DOMTokenList.prototype.remove) {
                     if (index !== -1 || lev <= MAX_LEV_DISTANCE) {
                         if (index !== -1 && paths.length < 2) {
                             lev = 0;
+                        } else if (searchWords[j] === val) {
+                            // Small trick to fix when you're looking for a one letter type
+                            // and there are other short named types.
+                            lev = -1;
                         }
                         if (results[fullId] === undefined) {
                             results[fullId] = {
@@ -1198,7 +1227,7 @@ if (!DOMTokenList.prototype.remove) {
                 var actives = [[], [], []];
                 // "current" is used to know which tab we're looking into.
                 var current = 0;
-                onEachLazy(document.getElementsByClassName("search-results"), function(e) {
+                onEachLazy(document.getElementById("results").childNodes, function(e) {
                     onEachLazy(e.getElementsByClassName("highlighted"), function(e) {
                         actives[current].push(e);
                     });
@@ -1215,7 +1244,7 @@ if (!DOMTokenList.prototype.remove) {
                     removeClass(actives[currentTab][0], "highlighted");
                 } else if (e.which === 40) { // down
                     if (!actives[currentTab].length) {
-                        var results = document.getElementsByClassName("search-results");
+                        var results = document.getElementById("results").childNodes;
                         if (results.length > 0) {
                             var res = results[currentTab].getElementsByClassName("result");
                             if (res.length > 0) {
@@ -1599,7 +1628,7 @@ if (!DOMTokenList.prototype.remove) {
                 clearTimeout(searchTimeout);
                 if (search_input.value.length === 0) {
                     if (browserSupportsHistoryApi()) {
-                        history.replaceState("", "std - Rust", "?search=");
+                        history.replaceState("", window.currentCrate + " - Rust", "?search=");
                     }
                     if (hasClass(main, "content")) {
                         removeClass(main, "hidden");
@@ -1787,6 +1816,7 @@ if (!DOMTokenList.prototype.remove) {
         block("type", "Type Definitions");
         block("foreigntype", "Foreign Types");
         block("keyword", "Keywords");
+        block("traitalias", "Trait Aliases");
     }
 
     window.initSidebarItems = initSidebarItems;
@@ -1887,12 +1917,30 @@ if (!DOMTokenList.prototype.remove) {
             updateLocalStorage("rustdoc-collapse", "true");
             addClass(innerToggle, "will-expand");
             onEveryMatchingChild(innerToggle, "inner", function(e) {
-                e.innerHTML = labelForToggleButton(true);
+                var parent = e.parentNode;
+                var superParent = null;
+
+                if (parent) {
+                    superParent = parent.parentNode;
+                }
+                if (!parent || !superParent || superParent.id !== "main" ||
+                    hasClass(parent, "impl") === false) {
+                    e.innerHTML = labelForToggleButton(true);
+                }
             });
             innerToggle.title = "expand all docs";
             if (fromAutoCollapse !== true) {
                 onEachLazy(document.getElementsByClassName("collapse-toggle"), function(e) {
-                    collapseDocs(e, "hide", pageId);
+                    var parent = e.parentNode;
+                    var superParent = null;
+
+                    if (parent) {
+                        superParent = parent.parentNode;
+                    }
+                    if (!parent || !superParent || superParent.id !== "main" ||
+                        hasClass(parent, "impl") === false) {
+                        collapseDocs(e, "hide", pageId);
+                    }
                 });
             }
         }
@@ -1918,9 +1966,9 @@ if (!DOMTokenList.prototype.remove) {
             };
         }
 
-        function implHider(addOrRemove) {
+        function implHider(addOrRemove, fullHide) {
             return function(n) {
-                var is_method = hasClass(n, "method");
+                var is_method = hasClass(n, "method") || fullHide;
                 if (is_method || hasClass(n, "type")) {
                     if (is_method === true) {
                         if (addOrRemove) {
@@ -1974,7 +2022,7 @@ if (!DOMTokenList.prototype.remove) {
                 }
             }
         } else {
-            // we are collapsing the impl block
+            // we are collapsing the impl block(s).
 
             var parentElem = toggle.parentNode;
             relatedDoc = parentElem;
@@ -1989,7 +2037,7 @@ if (!DOMTokenList.prototype.remove) {
                 return;
             }
 
-            // Hide all functions, but not associated types/consts
+            // Hide all functions, but not associated types/consts.
 
             if (mode === "toggle") {
                 if (hasClass(relatedDoc, "fns-now-collapsed") ||
@@ -2000,16 +2048,17 @@ if (!DOMTokenList.prototype.remove) {
                 }
             }
 
+            var dontApplyBlockRule = toggle.parentNode.parentNode.id !== "main";
             if (action === "show") {
                 removeClass(relatedDoc, "fns-now-collapsed");
                 removeClass(docblock, "hidden-by-usual-hider");
-                onEachLazy(toggle.childNodes, adjustToggle(false));
-                onEachLazy(relatedDoc.childNodes, implHider(false));
+                onEachLazy(toggle.childNodes, adjustToggle(false, dontApplyBlockRule));
+                onEachLazy(relatedDoc.childNodes, implHider(false, dontApplyBlockRule));
             } else if (action === "hide") {
                 addClass(relatedDoc, "fns-now-collapsed");
                 addClass(docblock, "hidden-by-usual-hider");
-                onEachLazy(toggle.childNodes, adjustToggle(true));
-                onEachLazy(relatedDoc.childNodes, implHider(true));
+                onEachLazy(toggle.childNodes, adjustToggle(true, dontApplyBlockRule));
+                onEachLazy(relatedDoc.childNodes, implHider(true, dontApplyBlockRule));
             }
         }
     }
@@ -2037,6 +2086,14 @@ if (!DOMTokenList.prototype.remove) {
                     collapser(e, collapse);
                 });
             }
+
+            var blanket_list = document.getElementById("blanket-implementations-list");
+
+            if (blanket_list !== null) {
+                onEachLazy(blanket_list.getElementsByClassName("collapse-toggle"), function(e) {
+                    collapser(e, collapse);
+                });
+            }
         }
     }
 
@@ -2059,16 +2116,22 @@ if (!DOMTokenList.prototype.remove) {
     }
 
     var toggle = createSimpleToggle(false);
+    var hideMethodDocs = getCurrentValue("rustdoc-method-docs") === "true";
+    var pageId = getPageId();
 
     var func = function(e) {
         var next = e.nextElementSibling;
         if (!next) {
             return;
         }
-        if (hasClass(next, "docblock") ||
-            (hasClass(next, "stability") &&
-             hasClass(next.nextElementSibling, "docblock"))) {
-            insertAfter(toggle.cloneNode(true), e.childNodes[e.childNodes.length - 1]);
+        if (hasClass(next, "docblock") === true ||
+            (hasClass(next, "stability") === true &&
+             hasClass(next.nextElementSibling, "docblock") === true)) {
+            var newToggle = toggle.cloneNode(true);
+            insertAfter(newToggle, e.childNodes[e.childNodes.length - 1]);
+            if (hideMethodDocs === true && hasClass(e, "method") === true) {
+                collapseDocs(newToggle, "hide", pageId);
+            }
         }
     };
 
@@ -2089,17 +2152,16 @@ if (!DOMTokenList.prototype.remove) {
     onEachLazy(document.getElementsByClassName("associatedconstant"), func);
     onEachLazy(document.getElementsByClassName("impl"), funcImpl);
     var impl_call = function() {};
-    if (getCurrentValue("rustdoc-method-docs") !== "false") {
+    if (hideMethodDocs === true) {
         impl_call = function(e, newToggle, pageId) {
             if (e.id.match(/^impl(?:-\d+)?$/) === null) {
                 // Automatically minimize all non-inherent impls
-                if (hasClass(e, "impl")) {
+                if (hasClass(e, "impl") === true) {
                     collapseDocs(newToggle, "hide", pageId);
                 }
             }
         };
     }
-    var pageId = getPageId();
     var newToggle = document.createElement("a");
     newToggle.href = "javascript:void(0)";
     newToggle.className = "collapse-toggle hidden-default collapsed";
@@ -2145,7 +2207,7 @@ if (!DOMTokenList.prototype.remove) {
             var inner_toggle = newToggle.cloneNode(true);
             inner_toggle.onclick = toggleClicked;
             e.insertBefore(inner_toggle, e.firstChild);
-            impl_call(e, inner_toggle, pageId);
+            impl_call(e.previousSibling, inner_toggle, pageId);
         }
     });
 
@@ -2224,6 +2286,8 @@ if (!DOMTokenList.prototype.remove) {
                     otherMessage += "struct";
                 } else if (hasClass(e, "non-exhaustive-enum")) {
                     otherMessage += "enum";
+                } else if (hasClass(e, "non-exhaustive-variant")) {
+                    otherMessage += "enum variant";
                 } else if (hasClass(e, "non-exhaustive-type")) {
                     otherMessage += "type";
                 }
@@ -2241,35 +2305,14 @@ if (!DOMTokenList.prototype.remove) {
             if (hasClass(e, "type-decl") === true && showItemDeclarations === true) {
                 collapseDocs(e.previousSibling.childNodes[0], "toggle");
             }
+            if (hasClass(e, "non-exhaustive") === true) {
+                collapseDocs(e.previousSibling.childNodes[0], "toggle");
+            }
         }
     }
 
     onEachLazy(document.getElementsByClassName("docblock"), buildToggleWrapper);
     onEachLazy(document.getElementsByClassName("sub-variant"), buildToggleWrapper);
-
-    // In the search display, allows to switch between tabs.
-    function printTab(nb) {
-        if (nb === 0 || nb === 1 || nb === 2) {
-            currentTab = nb;
-        }
-        var nb_copy = nb;
-        onEachLazy(document.getElementById("titles").childNodes, function(elem) {
-            if (nb_copy === 0) {
-                addClass(elem, "selected");
-            } else {
-                removeClass(elem, "selected");
-            }
-            nb_copy -= 1;
-        });
-        onEachLazy(document.getElementById("results").childNodes, function(elem) {
-            if (nb === 0) {
-                elem.style.display = "";
-            } else {
-                elem.style.display = "none";
-            }
-            nb -= 1;
-        });
-    }
 
     function createToggleWrapper(tog) {
         var span = document.createElement("span");
@@ -2293,7 +2336,11 @@ if (!DOMTokenList.prototype.remove) {
     }
     var attributesToggle = createToggleWrapper(createSimpleToggle(false));
     onEachLazy(main.getElementsByClassName("attributes"), function(i_e) {
-        i_e.parentNode.insertBefore(attributesToggle.cloneNode(true), i_e);
+        var attr_tog = attributesToggle.cloneNode(true);
+        if (hasClass(i_e, "top-attr") === true) {
+            addClass(attr_tog, "top-attr");
+        }
+        i_e.parentNode.insertBefore(attr_tog, i_e);
         itemAttributesFunc(i_e);
     });
 
@@ -2356,6 +2403,30 @@ if (!DOMTokenList.prototype.remove) {
         };
     });
 
+    // In the search display, allows to switch between tabs.
+    function printTab(nb) {
+        if (nb === 0 || nb === 1 || nb === 2) {
+            currentTab = nb;
+        }
+        var nb_copy = nb;
+        onEachLazy(document.getElementById("titles").childNodes, function(elem) {
+            if (nb_copy === 0) {
+                addClass(elem, "selected");
+            } else {
+                removeClass(elem, "selected");
+            }
+            nb_copy -= 1;
+        });
+        onEachLazy(document.getElementById("results").childNodes, function(elem) {
+            if (nb === 0) {
+                elem.style.display = "";
+            } else {
+                elem.style.display = "none";
+            }
+            nb -= 1;
+        });
+    }
+
     function putBackSearch(search_input) {
         if (search_input.value !== "") {
             addClass(main, "hidden");
@@ -2414,7 +2485,7 @@ if (!DOMTokenList.prototype.remove) {
             // for vertical layout (column-oriented flex layout for divs caused
             // errors in mobile browsers).
             if (e.tagName === "H2" || e.tagName === "H3") {
-                let nextTagName = e.nextElementSibling.tagName;
+                var nextTagName = e.nextElementSibling.tagName;
                 if (nextTagName == "H2" || nextTagName == "H3") {
                     e.nextElementSibling.style.display = "flex";
                 } else {

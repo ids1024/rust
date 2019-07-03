@@ -1,16 +1,16 @@
 //! An implementation of SipHash.
 
-#![allow(deprecated)]
+#![allow(deprecated)] // the types in this module are deprecated
 
-use marker::PhantomData;
-use ptr;
-use cmp;
-use mem;
+use crate::marker::PhantomData;
+use crate::ptr;
+use crate::cmp;
+use crate::mem;
 
 /// An implementation of SipHash 1-3.
 ///
 /// This is currently the default hashing function used by standard library
-/// (eg. `collections::HashMap` uses it by default).
+/// (e.g., `collections::HashMap` uses it by default).
 ///
 /// See: <https://131002.net/siphash>
 #[unstable(feature = "hashmap_internals", issue = "0")]
@@ -90,7 +90,7 @@ macro_rules! compress {
     });
 }
 
-/// Load an integer of the desired type from a byte stream, in LE order. Uses
+/// Loads an integer of the desired type from a byte stream, in LE order. Uses
 /// `copy_nonoverlapping` to let the compiler generate the most efficient way
 /// to load it from a possibly unaligned address.
 ///
@@ -107,7 +107,7 @@ macro_rules! load_int_le {
     });
 }
 
-/// Load an u64 using up to 7 bytes of a byte slice.
+/// Loads an u64 using up to 7 bytes of a byte slice.
 ///
 /// Unsafe because: unchecked indexing at start..start+len
 #[inline]
@@ -269,7 +269,7 @@ impl<S: Sip> super::Hasher for Hasher<S> {
     #[inline]
     fn write_usize(&mut self, i: usize) {
         let bytes = unsafe {
-            ::slice::from_raw_parts(&i as *const usize as *const u8, mem::size_of::<usize>())
+            crate::slice::from_raw_parts(&i as *const usize as *const u8, mem::size_of::<usize>())
         };
         self.short_write(bytes);
     }

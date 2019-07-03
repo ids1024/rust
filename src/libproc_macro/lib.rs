@@ -5,17 +5,19 @@
 //! function-like macros `#[proc_macro]`, macro attributes `#[proc_macro_attribute]` and
 //! custom derive attributes`#[proc_macro_derive]`.
 //!
-//! See [the book](../book/first-edition/procedural-macros.html) for more.
+//! See [the book] for more.
+//!
+//! [the book]: ../book/ch19-06-macros.html#procedural-macros-for-generating-code-from-attributes
 
 #![stable(feature = "proc_macro_lib", since = "1.15.0")]
 #![deny(missing_docs)]
-#![doc(html_logo_url = "https://www.rust-lang.org/logos/rust-logo-128x128-blk-v2.png",
-       html_favicon_url = "https://doc.rust-lang.org/favicon.ico",
-       html_root_url = "https://doc.rust-lang.org/nightly/",
+#![doc(html_root_url = "https://doc.rust-lang.org/nightly/",
        html_playground_url = "https://play.rust-lang.org/",
        issue_tracker_base_url = "https://github.com/rust-lang/rust/issues/",
        test(no_crate_inject, attr(deny(warnings))),
        test(attr(allow(dead_code, deprecated, unused_variables, unused_mut))))]
+
+#![deny(rust_2018_idioms)]
 
 #![feature(nll)]
 #![feature(staged_api)]
@@ -89,7 +91,7 @@ impl TokenStream {
 /// or characters not existing in the language.
 /// All tokens in the parsed stream get `Span::call_site()` spans.
 ///
-/// NOTE: Some errors may cause panics instead of returning `LexError`. We reserve the right to
+/// NOTE: some errors may cause panics instead of returning `LexError`. We reserve the right to
 /// change these errors into `LexError`s later.
 #[stable(feature = "proc_macro_lib", since = "1.15.0")]
 impl FromStr for TokenStream {
@@ -114,7 +116,7 @@ impl ToString for TokenStream {
 /// with `Delimiter::None` delimiters and negative numeric literals.
 #[stable(feature = "proc_macro_lib", since = "1.15.0")]
 impl fmt::Display for TokenStream {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.to_string())
     }
 }
@@ -122,7 +124,7 @@ impl fmt::Display for TokenStream {
 /// Prints token in a form convenient for debugging.
 #[stable(feature = "proc_macro_lib", since = "1.15.0")]
 impl fmt::Debug for TokenStream {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("TokenStream ")?;
         f.debug_list().entries(self.clone()).finish()
     }
@@ -158,9 +160,7 @@ impl iter::FromIterator<TokenTree> for TokenStream {
 impl iter::FromIterator<TokenStream> for TokenStream {
     fn from_iter<I: IntoIterator<Item = TokenStream>>(streams: I) -> Self {
         let mut builder = bridge::client::TokenStreamBuilder::new();
-        for stream in streams {
-            builder.push(stream.0);
-        }
+        streams.into_iter().for_each(|stream| builder.push(stream.0));
         TokenStream(builder.build())
     }
 }
@@ -183,7 +183,7 @@ impl Extend<TokenStream> for TokenStream {
 /// Public implementation details for the `TokenStream` type, such as iterators.
 #[stable(feature = "proc_macro_lib2", since = "1.29.0")]
 pub mod token_stream {
-    use {bridge, Group, Ident, Literal, Punct, TokenTree, TokenStream};
+    use crate::{bridge, Group, Ident, Literal, Punct, TokenTree, TokenStream};
 
     /// An iterator over `TokenStream`'s `TokenTree`s.
     /// The iteration is "shallow", e.g., the iterator doesn't recurse into delimited groups,
@@ -245,7 +245,7 @@ impl !Sync for Span {}
 
 macro_rules! diagnostic_method {
     ($name:ident, $level:expr) => (
-        /// Create a new `Diagnostic` with the given `message` at the span
+        /// Creates a new `Diagnostic` with the given `message` at the span
         /// `self`.
         #[unstable(feature = "proc_macro_diagnostic", issue = "54140")]
         pub fn $name<T: Into<String>>(self, message: T) -> Diagnostic {
@@ -291,19 +291,19 @@ impl Span {
         Span(self.0.source())
     }
 
-    /// Get the starting line/column in the source file for this span.
+    /// Gets the starting line/column in the source file for this span.
     #[unstable(feature = "proc_macro_span", issue = "54725")]
     pub fn start(&self) -> LineColumn {
         self.0.start()
     }
 
-    /// Get the ending line/column in the source file for this span.
+    /// Gets the ending line/column in the source file for this span.
     #[unstable(feature = "proc_macro_span", issue = "54725")]
     pub fn end(&self) -> LineColumn {
         self.0.end()
     }
 
-    /// Create a new span encompassing `self` and `other`.
+    /// Creates a new span encompassing `self` and `other`.
     ///
     /// Returns `None` if `self` and `other` are from different files.
     #[unstable(feature = "proc_macro_span", issue = "54725")]
@@ -331,6 +331,18 @@ impl Span {
         self.0 == other.0
     }
 
+    /// Returns the source text behind a span. This preserves the original source
+    /// code, including spaces and comments. It only returns a result if the span
+    /// corresponds to real source code.
+    ///
+    /// Note: The observable result of a macro should only rely on the tokens and
+    /// not on this source text. The result of this function is a best effort to
+    /// be used for diagnostics only.
+    #[unstable(feature = "proc_macro_span", issue = "54725")]
+    pub fn source_text(&self) -> Option<String> {
+        self.0.source_text()
+    }
+
     diagnostic_method!(error, Level::Error);
     diagnostic_method!(warning, Level::Warning);
     diagnostic_method!(note, Level::Note);
@@ -340,7 +352,7 @@ impl Span {
 /// Prints a span in a form convenient for debugging.
 #[stable(feature = "proc_macro_lib2", since = "1.29.0")]
 impl fmt::Debug for Span {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.0.fmt(f)
     }
 }
@@ -369,7 +381,7 @@ impl !Sync for LineColumn {}
 pub struct SourceFile(bridge::client::SourceFile);
 
 impl SourceFile {
-    /// Get the path to this source file.
+    /// Gets the path to this source file.
     ///
     /// ### Note
     /// If the code span associated with this `SourceFile` was generated by an external macro, this
@@ -398,7 +410,7 @@ impl SourceFile {
 
 #[unstable(feature = "proc_macro_span", issue = "54725")]
 impl fmt::Debug for SourceFile {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("SourceFile")
             .field("path", &self.path())
             .field("is_real", &self.is_real())
@@ -483,7 +495,7 @@ impl TokenTree {
 /// Prints token tree in a form convenient for debugging.
 #[stable(feature = "proc_macro_lib2", since = "1.29.0")]
 impl fmt::Debug for TokenTree {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         // Each of these has the name in the struct type in the derived debug,
         // so don't bother with an extra layer of indirection
         match *self {
@@ -542,7 +554,7 @@ impl ToString for TokenTree {
 /// with `Delimiter::None` delimiters and negative numeric literals.
 #[stable(feature = "proc_macro_lib2", since = "1.29.0")]
 impl fmt::Display for TokenTree {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.to_string())
     }
 }
@@ -667,14 +679,14 @@ impl ToString for Group {
 /// with `Delimiter::None` delimiters.
 #[stable(feature = "proc_macro_lib2", since = "1.29.0")]
 impl fmt::Display for Group {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.to_string())
     }
 }
 
 #[stable(feature = "proc_macro_lib2", since = "1.29.0")]
 impl fmt::Debug for Group {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Group")
             .field("delimiter", &self.delimiter())
             .field("stream", &self.stream())
@@ -763,14 +775,14 @@ impl ToString for Punct {
 /// back into the same character.
 #[stable(feature = "proc_macro_lib2", since = "1.29.0")]
 impl fmt::Display for Punct {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.to_string())
     }
 }
 
 #[stable(feature = "proc_macro_lib2", since = "1.29.0")]
 impl fmt::Debug for Punct {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Punct")
             .field("ch", &self.as_char())
             .field("spacing", &self.spacing())
@@ -842,14 +854,14 @@ impl ToString for Ident {
 /// back into the same identifier.
 #[stable(feature = "proc_macro_lib2", since = "1.29.0")]
 impl fmt::Display for Ident {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.to_string())
     }
 }
 
 #[stable(feature = "proc_macro_lib2", since = "1.29.0")]
 impl fmt::Debug for Ident {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Ident")
             .field("ident", &self.to_string())
             .field("span", &self.span())
@@ -1092,14 +1104,14 @@ impl ToString for Literal {
 /// back into the same literal (except for possible rounding for floating point literals).
 #[stable(feature = "proc_macro_lib2", since = "1.29.0")]
 impl fmt::Display for Literal {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.to_string())
     }
 }
 
 #[stable(feature = "proc_macro_lib2", since = "1.29.0")]
 impl fmt::Debug for Literal {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         // FIXME(eddyb) `Literal` should not expose internal `Debug` impls.
         self.0.fmt(f)
     }

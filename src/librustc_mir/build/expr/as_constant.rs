@@ -1,11 +1,11 @@
 //! See docs in build/expr/mod.rs
 
-use build::Builder;
-use hair::*;
+use crate::build::Builder;
+use crate::hair::*;
 use rustc::mir::*;
 use rustc::ty::CanonicalUserTypeAnnotation;
 
-impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
+impl<'a, 'tcx> Builder<'a, 'tcx> {
     /// Compile `expr`, yielding a compile-time constant. Assumes that
     /// `expr` is a valid compile-time constant!
     pub fn as_constant<M>(&mut self, expr: M) -> Constant<'tcx>

@@ -1,11 +1,11 @@
 #![allow(unused)]
 
-use ptr::{self, NonNull};
-use mem;
-use cell::UnsafeCell;
-use slice;
-use ops::{Deref, DerefMut, Index, IndexMut, CoerceUnsized};
-use slice::SliceIndex;
+use crate::ptr::{self, NonNull};
+use crate::mem;
+use crate::cell::UnsafeCell;
+use crate::slice;
+use crate::ops::{Deref, DerefMut, Index, IndexMut, CoerceUnsized};
+use crate::slice::SliceIndex;
 
 use fortanix_sgx_abi::*;
 use super::super::mem::is_user_range;
@@ -63,44 +63,51 @@ pub unsafe trait UserSafe {
 
     /// Construct a pointer to `Self` given a memory range in user space.
     ///
-    /// NB. This takes a size, not a length!
+    /// N.B., this takes a size, not a length!
     ///
     /// # Safety
+    ///
     /// The caller must ensure the memory range is in user memory, is the
     /// correct size and is correctly aligned and points to the right type.
     unsafe fn from_raw_sized_unchecked(ptr: *mut u8, size: usize) -> *mut Self;
 
     /// Construct a pointer to `Self` given a memory range.
     ///
-    /// NB. This takes a size, not a length!
+    /// N.B., this takes a size, not a length!
     ///
     /// # Safety
+    ///
     /// The caller must ensure the memory range points to the correct type.
     ///
     /// # Panics
+    ///
     /// This function panics if:
     ///
-    /// * The pointer is not aligned
-    /// * The pointer is null
-    /// * The pointed-to range is not in user memory
+    /// * the pointer is not aligned.
+    /// * the pointer is null.
+    /// * the pointed-to range does not fit in the address space.
+    /// * the pointed-to range is not in user memory.
     unsafe fn from_raw_sized(ptr: *mut u8, size: usize) -> NonNull<Self> {
+        assert!(ptr.wrapping_add(size) >= ptr);
         let ret = Self::from_raw_sized_unchecked(ptr, size);
         Self::check_ptr(ret);
         NonNull::new_unchecked(ret as _)
     }
 
-    /// Check if a pointer may point to Self in user memory.
+    /// Checks if a pointer may point to `Self` in user memory.
     ///
     /// # Safety
+    ///
     /// The caller must ensure the memory range points to the correct type and
     /// length (if this is a slice).
     ///
     /// # Panics
+    ///
     /// This function panics if:
     ///
-    /// * The pointer is not aligned
-    /// * The pointer is null
-    /// * The pointed-to range is not in user memory
+    /// * the pointer is not aligned.
+    /// * the pointer is null.
+    /// * the pointed-to range is not in user memory.
     unsafe fn check_ptr(ptr: *const Self) {
         let is_aligned = |p| -> bool {
             0 == (p as usize) & (Self::align_of() - 1)
@@ -183,12 +190,21 @@ impl<T: ?Sized> User<T> where T: UserSafe {
     // from outside as obtained by `super::alloc`.
     fn new_uninit_bytes(size: usize) -> Self {
         unsafe {
-            let ptr = super::alloc(size, T::align_of()).expect("User memory allocation failed");
-            User(NonNull::new_userref(T::from_raw_sized(ptr as _, size)))
+            // Mustn't call alloc with size 0.
+            let ptr = if size > 0 {
+                rtunwrap!(Ok, super::alloc(size, T::align_of())) as _
+            } else {
+                T::align_of() as _ // dangling pointer ok for size 0
+            };
+            if let Ok(v) = crate::panic::catch_unwind(|| T::from_raw_sized(ptr, size)) {
+                User(NonNull::new_userref(v))
+            } else {
+                rtabort!("Got invalid pointer from alloc() usercall")
+            }
         }
     }
 
-    /// Copy `val` into freshly allocated space in user memory.
+    /// Copies `val` into freshly allocated space in user memory.
     pub fn new_from_enclave(val: &T) -> Self {
         unsafe {
             let ret = Self::new_uninit_bytes(mem::size_of_val(val));
@@ -201,7 +217,7 @@ impl<T: ?Sized> User<T> where T: UserSafe {
         }
     }
 
-    /// Create an owned `User<T>` from a raw pointer.
+    /// Creates an owned `User<T>` from a raw pointer.
     ///
     /// # Safety
     /// The caller must ensure `ptr` points to `T`, is freeable with the `free`
@@ -218,7 +234,7 @@ impl<T: ?Sized> User<T> where T: UserSafe {
         User(NonNull::new_userref(ptr))
     }
 
-    /// Convert this value into a raw pointer. The value will no longer be
+    /// Converts this value into a raw pointer. The value will no longer be
     /// automatically freed.
     pub fn into_raw(self) -> *mut T {
         let ret = self.0;
@@ -242,7 +258,7 @@ impl<T> User<[T]> where [T]: UserSafe {
         Self::new_uninit_bytes(n * mem::size_of::<T>())
     }
 
-    /// Create an owned `User<[T]>` from a raw thin pointer and a slice length.
+    /// Creates an owned `User<[T]>` from a raw thin pointer and a slice length.
     ///
     /// # Safety
     /// The caller must ensure `ptr` points to `len` elements of `T`, is
@@ -254,6 +270,7 @@ impl<T> User<[T]> where [T]: UserSafe {
     ///
     /// * The pointer is not aligned
     /// * The pointer is null
+    /// * The pointed-to range does not fit in the address space
     /// * The pointed-to range is not in user memory
     pub unsafe fn from_raw_parts(ptr: *mut T, len: usize) -> Self {
         User(NonNull::new_userref(<[T]>::from_raw_sized(ptr as _, len * mem::size_of::<T>())))
@@ -262,7 +279,7 @@ impl<T> User<[T]> where [T]: UserSafe {
 
 #[unstable(feature = "sgx_platform", issue = "56975")]
 impl<T: ?Sized> UserRef<T> where T: UserSafe {
-    /// Create a `&UserRef<[T]>` from a raw pointer.
+    /// Creates a `&UserRef<[T]>` from a raw pointer.
     ///
     /// # Safety
     /// The caller must ensure `ptr` points to `T`.
@@ -278,7 +295,7 @@ impl<T: ?Sized> UserRef<T> where T: UserSafe {
         &*(ptr as *const Self)
     }
 
-    /// Create a `&mut UserRef<[T]>` from a raw pointer. See the struct
+    /// Creates a `&mut UserRef<[T]>` from a raw pointer. See the struct
     /// documentation for the nuances regarding a `&mut UserRef<T>`.
     ///
     /// # Safety
@@ -295,7 +312,7 @@ impl<T: ?Sized> UserRef<T> where T: UserSafe {
         &mut*(ptr as *mut Self)
     }
 
-    /// Copy `val` into user memory.
+    /// Copies `val` into user memory.
     ///
     /// # Panics
     /// This function panics if the destination doesn't have the same size as
@@ -311,7 +328,7 @@ impl<T: ?Sized> UserRef<T> where T: UserSafe {
         }
     }
 
-    /// Copy the value from user memory and place it into `dest`.
+    /// Copies the value from user memory and place it into `dest`.
     ///
     /// # Panics
     /// This function panics if the destination doesn't have the same size as
@@ -340,7 +357,7 @@ impl<T: ?Sized> UserRef<T> where T: UserSafe {
 
 #[unstable(feature = "sgx_platform", issue = "56975")]
 impl<T> UserRef<T> where T: UserSafe {
-    /// Copy the value from user memory into enclave memory.
+    /// Copies the value from user memory into enclave memory.
     pub fn to_enclave(&self) -> T {
         unsafe { ptr::read(self.0.get()) }
     }
@@ -348,7 +365,7 @@ impl<T> UserRef<T> where T: UserSafe {
 
 #[unstable(feature = "sgx_platform", issue = "56975")]
 impl<T> UserRef<[T]> where [T]: UserSafe {
-    /// Create a `&UserRef<[T]>` from a raw thin pointer and a slice length.
+    /// Creates a `&UserRef<[T]>` from a raw thin pointer and a slice length.
     ///
     /// # Safety
     /// The caller must ensure `ptr` points to `n` elements of `T`.
@@ -358,12 +375,13 @@ impl<T> UserRef<[T]> where [T]: UserSafe {
     ///
     /// * The pointer is not aligned
     /// * The pointer is null
+    /// * The pointed-to range does not fit in the address space
     /// * The pointed-to range is not in user memory
     pub unsafe fn from_raw_parts<'a>(ptr: *const T, len: usize) -> &'a Self {
         &*(<[T]>::from_raw_sized(ptr as _, len * mem::size_of::<T>()).as_ptr() as *const Self)
     }
 
-    /// Create a `&mut UserRef<[T]>` from a raw thin pointer and a slice length.
+    /// Creates a `&mut UserRef<[T]>` from a raw thin pointer and a slice length.
     /// See the struct documentation for the nuances regarding a
     /// `&mut UserRef<T>`.
     ///
@@ -375,6 +393,7 @@ impl<T> UserRef<[T]> where [T]: UserSafe {
     ///
     /// * The pointer is not aligned
     /// * The pointer is null
+    /// * The pointed-to range does not fit in the address space
     /// * The pointed-to range is not in user memory
     pub unsafe fn from_raw_parts_mut<'a>(ptr: *mut T, len: usize) -> &'a mut Self {
         &mut*(<[T]>::from_raw_sized(ptr as _, len * mem::size_of::<T>()).as_ptr() as *mut Self)
@@ -395,7 +414,7 @@ impl<T> UserRef<[T]> where [T]: UserSafe {
         unsafe { (*self.0.get()).len() }
     }
 
-    /// Copy the value from user memory and place it into `dest`. Afterwards,
+    /// Copies the value from user memory and place it into `dest`. Afterwards,
     /// `dest` will contain exactly `self.len()` elements.
     ///
     /// # Panics
@@ -411,7 +430,7 @@ impl<T> UserRef<[T]> where [T]: UserSafe {
         }
     }
 
-    /// Copy the value from user memory into a vector in enclave memory.
+    /// Copies the value from user memory into a vector in enclave memory.
     pub fn to_enclave(&self) -> Vec<T> {
         let mut ret = Vec::with_capacity(self.len());
         self.copy_to_enclave_vec(&mut ret);
@@ -419,7 +438,7 @@ impl<T> UserRef<[T]> where [T]: UserSafe {
     }
 
     /// Returns an iterator over the slice.
-    pub fn iter(&self) -> Iter<T>
+    pub fn iter(&self) -> Iter<'_, T>
         where T: UserSafe // FIXME: should be implied by [T]: UserSafe?
     {
         unsafe {
@@ -428,7 +447,7 @@ impl<T> UserRef<[T]> where [T]: UserSafe {
     }
 
     /// Returns an iterator that allows modifying each value.
-    pub fn iter_mut(&mut self) -> IterMut<T>
+    pub fn iter_mut(&mut self) -> IterMut<'_, T>
         where T: UserSafe // FIXME: should be implied by [T]: UserSafe?
     {
         unsafe {
@@ -509,7 +528,11 @@ impl<T, I: SliceIndex<[T]>> Index<I> for UserRef<[T]> where [T]: UserSafe, I::Ou
     #[inline]
     fn index(&self, index: I) -> &UserRef<I::Output> {
         unsafe {
-            UserRef::from_ptr(index.index(&*self.as_raw_ptr()))
+            if let Some(slice) = index.get(&*self.as_raw_ptr()) {
+                UserRef::from_ptr(slice)
+            } else {
+                rtabort!("index out of range for user slice");
+            }
         }
     }
 }
@@ -519,25 +542,35 @@ impl<T, I: SliceIndex<[T]>> IndexMut<I> for UserRef<[T]> where [T]: UserSafe, I:
     #[inline]
     fn index_mut(&mut self, index: I) -> &mut UserRef<I::Output> {
         unsafe {
-            UserRef::from_mut_ptr(index.index_mut(&mut*self.as_raw_mut_ptr()))
+            if let Some(slice) = index.get_mut(&mut*self.as_raw_mut_ptr()) {
+                UserRef::from_mut_ptr(slice)
+            } else {
+                rtabort!("index out of range for user slice");
+            }
         }
     }
 }
 
 #[unstable(feature = "sgx_platform", issue = "56975")]
 impl UserRef<super::raw::ByteBuffer> {
-    /// Copy the user memory range pointed to by the user `ByteBuffer` to
+    /// Copies the user memory range pointed to by the user `ByteBuffer` to
     /// enclave memory.
     ///
     /// # Panics
-    /// This function panics if:
+    /// This function panics if, in the user `ByteBuffer`:
     ///
-    /// * The pointer in the user `ByteBuffer` is null
-    /// * The pointed-to range in the user `ByteBuffer` is not in user memory
+    /// * The pointer is null
+    /// * The pointed-to range does not fit in the address space
+    /// * The pointed-to range is not in user memory
     pub fn copy_user_buffer(&self) -> Vec<u8> {
         unsafe {
             let buf = self.to_enclave();
-            User::from_raw_parts(buf.data as _, buf.len).to_enclave()
+            if buf.len > 0 {
+                User::from_raw_parts(buf.data as _, buf.len).to_enclave()
+            } else {
+                // Mustn't look at `data` or call `free` if `len` is `0`.
+                Vec::with_capacity(0)
+            }
         }
     }
 }

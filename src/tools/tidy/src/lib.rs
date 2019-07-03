@@ -3,11 +3,6 @@
 //! This library contains the tidy lints and exposes it
 //! to be used by tools.
 
-extern crate serde;
-extern crate serde_json;
-#[macro_use]
-extern crate serde_derive;
-
 use std::fs;
 
 use std::path::Path;

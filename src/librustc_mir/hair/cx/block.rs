@@ -1,6 +1,6 @@
-use hair::*;
-use hair::cx::Cx;
-use hair::cx::to_ref::ToRef;
+use crate::hair::{self, *};
+use crate::hair::cx::Cx;
+use crate::hair::cx::to_ref::ToRef;
 use rustc::middle::region;
 use rustc::hir;
 use rustc::ty;
@@ -10,7 +10,7 @@ use rustc_data_structures::indexed_vec::Idx;
 impl<'tcx> Mirror<'tcx> for &'tcx hir::Block {
     type Output = Block<'tcx>;
 
-    fn make_mirror<'a, 'gcx>(self, cx: &mut Cx<'a, 'gcx, 'tcx>) -> Block<'tcx> {
+    fn make_mirror(self, cx: &mut Cx<'_, 'tcx>) -> Block<'tcx> {
         // We have to eagerly lower the "spine" of the statements
         // in order to get the lexical scoping correctly.
         let stmts = mirror_stmts(cx, self.hir_id.local_id, &*self.stmts);
@@ -30,7 +30,7 @@ impl<'tcx> Mirror<'tcx> for &'tcx hir::Block {
                 hir::BlockCheckMode::DefaultBlock =>
                     BlockSafety::Safe,
                 hir::BlockCheckMode::UnsafeBlock(..) =>
-                    BlockSafety::ExplicitUnsafe(self.id),
+                    BlockSafety::ExplicitUnsafe(self.hir_id),
                 hir::BlockCheckMode::PushUnsafeBlock(..) =>
                     BlockSafety::PushUnsafe,
                 hir::BlockCheckMode::PopUnsafeBlock(..) =>
@@ -40,15 +40,16 @@ impl<'tcx> Mirror<'tcx> for &'tcx hir::Block {
     }
 }
 
-fn mirror_stmts<'a, 'gcx, 'tcx>(cx: &mut Cx<'a, 'gcx, 'tcx>,
-                                block_id: hir::ItemLocalId,
-                                stmts: &'tcx [hir::Stmt])
-                                -> Vec<StmtRef<'tcx>> {
+fn mirror_stmts<'a, 'tcx>(
+    cx: &mut Cx<'a, 'tcx>,
+    block_id: hir::ItemLocalId,
+    stmts: &'tcx [hir::Stmt],
+) -> Vec<StmtRef<'tcx>> {
     let mut result = vec![];
     for (index, stmt) in stmts.iter().enumerate() {
-        let hir_id = cx.tcx.hir().node_to_hir_id(stmt.id);
+        let hir_id = stmt.hir_id;
         let opt_dxn_ext = cx.region_scope_tree.opt_destruction_scope(hir_id.local_id);
-        let stmt_span = StatementSpan(cx.tcx.hir().span(stmt.id));
+        let stmt_span = StatementSpan(cx.tcx.hir().span(hir_id));
         match stmt.node {
             hir::StmtKind::Expr(ref expr) |
             hir::StmtKind::Semi(ref expr) => {
@@ -83,10 +84,12 @@ fn mirror_stmts<'a, 'gcx, 'tcx>(cx: &mut Cx<'a, 'gcx, 'tcx>,
                             ty: pattern.ty,
                             span: pattern.span,
                             kind: Box::new(PatternKind::AscribeUserType {
-                                user_ty: PatternTypeProjection::from_user_type(user_ty),
-                                user_ty_span: ty.span,
+                                ascription: hair::pattern::Ascription {
+                                    user_ty: PatternTypeProjection::from_user_type(user_ty),
+                                    user_ty_span: ty.span,
+                                    variance: ty::Variance::Covariant,
+                                },
                                 subpattern: pattern,
-                                variance: ty::Variance::Covariant,
                             })
                         };
                     }
@@ -101,7 +104,7 @@ fn mirror_stmts<'a, 'gcx, 'tcx>(cx: &mut Cx<'a, 'gcx, 'tcx>,
                         },
                         pattern,
                         initializer: local.init.to_ref(),
-                        lint_level: cx.lint_level_of(local.id),
+                        lint_level: LintLevel::Explicit(local.hir_id),
                     },
                     opt_destruction_scope: opt_dxn_ext,
                     span: stmt_span,
@@ -112,10 +115,11 @@ fn mirror_stmts<'a, 'gcx, 'tcx>(cx: &mut Cx<'a, 'gcx, 'tcx>,
     return result;
 }
 
-pub fn to_expr_ref<'a, 'gcx, 'tcx>(cx: &mut Cx<'a, 'gcx, 'tcx>,
-                                   block: &'tcx hir::Block)
-                                   -> ExprRef<'tcx> {
-    let block_ty = cx.tables().node_id_to_type(block.hir_id);
+pub fn to_expr_ref<'a, 'tcx>(
+    cx: &mut Cx<'a, 'tcx>,
+    block: &'tcx hir::Block,
+) -> ExprRef<'tcx> {
+    let block_ty = cx.tables().node_type(block.hir_id);
     let temp_lifetime = cx.region_scope_tree.temporary_scope(block.hir_id.local_id);
     let expr = Expr {
         ty: block_ty,

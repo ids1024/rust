@@ -1,28 +1,30 @@
 use errors::Applicability;
-use syntax::parse::lexer::{TokenAndSpan, StringReader as Lexer};
+use syntax::parse::lexer::{StringReader as Lexer};
 use syntax::parse::{ParseSess, token};
 use syntax::source_map::FilePathMapping;
-use syntax_pos::FileName;
+use syntax_pos::{InnerSpan, FileName};
 
-use clean;
-use core::DocContext;
-use fold::DocFolder;
-use html::markdown::{self, RustCodeBlock};
-use passes::Pass;
+use crate::clean;
+use crate::core::DocContext;
+use crate::fold::DocFolder;
+use crate::html::markdown::{self, RustCodeBlock};
+use crate::passes::Pass;
 
-pub const CHECK_CODE_BLOCK_SYNTAX: Pass =
-    Pass::early("check-code-block-syntax", check_code_block_syntax,
-                "validates syntax inside Rust code blocks");
+pub const CHECK_CODE_BLOCK_SYNTAX: Pass = Pass {
+    name: "check-code-block-syntax",
+    pass: check_code_block_syntax,
+    description: "validates syntax inside Rust code blocks",
+};
 
-pub fn check_code_block_syntax(krate: clean::Crate, cx: &DocContext) -> clean::Crate {
+pub fn check_code_block_syntax(krate: clean::Crate, cx: &DocContext<'_>) -> clean::Crate {
     SyntaxChecker { cx }.fold_crate(krate)
 }
 
-struct SyntaxChecker<'a, 'tcx: 'a, 'rcx: 'a> {
-    cx: &'a DocContext<'a, 'tcx, 'rcx>,
+struct SyntaxChecker<'a, 'tcx> {
+    cx: &'a DocContext<'tcx>,
 }
 
-impl<'a, 'tcx, 'rcx> SyntaxChecker<'a, 'tcx, 'rcx> {
+impl<'a, 'tcx> SyntaxChecker<'a, 'tcx> {
     fn check_rust_syntax(&self, item: &clean::Item, dox: &str, code_block: RustCodeBlock) {
         let sess = ParseSess::new(FilePathMapping::empty());
         let source_file = sess.source_map().new_source_file(
@@ -31,8 +33,8 @@ impl<'a, 'tcx, 'rcx> SyntaxChecker<'a, 'tcx, 'rcx> {
         );
 
         let errors = Lexer::new_or_buffered_errs(&sess, source_file, None).and_then(|mut lexer| {
-            while let Ok(TokenAndSpan { tok, .. }) = lexer.try_next_token() {
-                if tok == token::Eof {
+            while let Ok(token::Token { kind, .. }) = lexer.try_next_token() {
+                if kind == token::Eof {
                     break;
                 }
             }
@@ -61,8 +63,8 @@ impl<'a, 'tcx, 'rcx> SyntaxChecker<'a, 'tcx, 'rcx> {
                 }
 
                 if code_block.syntax.is_none() && code_block.is_fenced {
-                    let sp = sp.from_inner_byte_pos(0, 3);
-                    diag.span_suggestion_with_applicability(
+                    let sp = sp.from_inner(InnerSpan::new(0, 3));
+                    diag.span_suggestion(
                         sp,
                         "mark blocks that do not contain Rust code as text",
                         String::from("```text"),
@@ -96,7 +98,7 @@ impl<'a, 'tcx, 'rcx> SyntaxChecker<'a, 'tcx, 'rcx> {
     }
 }
 
-impl<'a, 'tcx, 'rcx> DocFolder for SyntaxChecker<'a, 'tcx, 'rcx> {
+impl<'a, 'tcx> DocFolder for SyntaxChecker<'a, 'tcx> {
     fn fold_item(&mut self, item: clean::Item) -> Option<clean::Item> {
         if let Some(dox) = &item.attrs.collapsed_doc_value() {
             for code_block in markdown::rust_code_blocks(&dox) {

@@ -7,28 +7,29 @@
 //!
 //! [c]: https://rust-lang.github.io/rustc-guide/traits/canonicalization.html
 
-use infer::canonical::substitute::substitute_value;
-use infer::canonical::{
+use crate::arena::ArenaAllocatable;
+use crate::infer::canonical::substitute::substitute_value;
+use crate::infer::canonical::{
     Canonical, CanonicalVarValues, CanonicalizedQueryResponse, Certainty,
     OriginalQueryValues, QueryRegionConstraint, QueryResponse,
 };
-use infer::region_constraints::{Constraint, RegionConstraintData};
-use infer::InferCtxtBuilder;
-use infer::{InferCtxt, InferOk, InferResult};
+use crate::infer::region_constraints::{Constraint, RegionConstraintData};
+use crate::infer::InferCtxtBuilder;
+use crate::infer::{InferCtxt, InferOk, InferResult};
+use crate::mir::interpret::ConstValue;
 use rustc_data_structures::indexed_vec::Idx;
 use rustc_data_structures::indexed_vec::IndexVec;
-use rustc_data_structures::sync::Lrc;
 use std::fmt::Debug;
 use syntax_pos::DUMMY_SP;
-use traits::query::{Fallible, NoSolution};
-use traits::TraitEngine;
-use traits::{Obligation, ObligationCause, PredicateObligation};
-use ty::fold::TypeFoldable;
-use ty::subst::{Kind, UnpackedKind};
-use ty::{self, BoundVar, Lift, Ty, TyCtxt};
-use util::captures::Captures;
+use crate::traits::query::{Fallible, NoSolution};
+use crate::traits::TraitEngine;
+use crate::traits::{Obligation, ObligationCause, PredicateObligation};
+use crate::ty::fold::TypeFoldable;
+use crate::ty::subst::{Kind, UnpackedKind};
+use crate::ty::{self, BoundVar, InferConst, Lift, Ty, TyCtxt};
+use crate::util::captures::Captures;
 
-impl<'cx, 'gcx, 'tcx> InferCtxtBuilder<'cx, 'gcx, 'tcx> {
+impl<'tcx> InferCtxtBuilder<'tcx> {
     /// The "main method" for a canonicalized trait query. Given the
     /// canonical key `canonical_key`, this method will create a new
     /// inference context, instantiate the key, and run your operation
@@ -41,19 +42,19 @@ impl<'cx, 'gcx, 'tcx> InferCtxtBuilder<'cx, 'gcx, 'tcx> {
     ///
     /// (It might be mildly nicer to implement this on `TyCtxt`, and
     /// not `InferCtxtBuilder`, but that is a bit tricky right now.
-    /// In part because we would need a `for<'gcx: 'tcx>` sort of
+    /// In part because we would need a `for<'tcx>` sort of
     /// bound for the closure and in part because it is convenient to
     /// have `'tcx` be free on this function so that we can talk about
     /// `K: TypeFoldable<'tcx>`.)
     pub fn enter_canonical_trait_query<K, R>(
-        &'tcx mut self,
+        &mut self,
         canonical_key: &Canonical<'tcx, K>,
-        operation: impl FnOnce(&InferCtxt<'_, 'gcx, 'tcx>, &mut dyn TraitEngine<'tcx>, K)
-            -> Fallible<R>,
-    ) -> Fallible<CanonicalizedQueryResponse<'gcx, R>>
+        operation: impl FnOnce(&InferCtxt<'_, 'tcx>, &mut dyn TraitEngine<'tcx>, K) -> Fallible<R>,
+    ) -> Fallible<CanonicalizedQueryResponse<'tcx, R>>
     where
         K: TypeFoldable<'tcx>,
-        R: Debug + Lift<'gcx> + TypeFoldable<'tcx>,
+        R: Debug + Lift<'tcx> + TypeFoldable<'tcx>,
+        Canonical<'tcx, <QueryResponse<'tcx, R> as Lift<'tcx>>::Lifted>: ArenaAllocatable,
     {
         self.enter_with_canonical(
             DUMMY_SP,
@@ -71,7 +72,7 @@ impl<'cx, 'gcx, 'tcx> InferCtxtBuilder<'cx, 'gcx, 'tcx> {
     }
 }
 
-impl<'cx, 'gcx, 'tcx> InferCtxt<'cx, 'gcx, 'tcx> {
+impl<'cx, 'tcx> InferCtxt<'cx, 'tcx> {
     /// This method is meant to be invoked as the final step of a canonical query
     /// implementation. It is given:
     ///
@@ -96,9 +97,10 @@ impl<'cx, 'gcx, 'tcx> InferCtxt<'cx, 'gcx, 'tcx> {
         inference_vars: CanonicalVarValues<'tcx>,
         answer: T,
         fulfill_cx: &mut dyn TraitEngine<'tcx>,
-    ) -> Fallible<CanonicalizedQueryResponse<'gcx, T>>
+    ) -> Fallible<CanonicalizedQueryResponse<'tcx, T>>
     where
-        T: Debug + Lift<'gcx> + TypeFoldable<'tcx>,
+        T: Debug + Lift<'tcx> + TypeFoldable<'tcx>,
+        Canonical<'tcx, <QueryResponse<'tcx, T> as Lift<'tcx>>::Lifted>: ArenaAllocatable,
     {
         let query_response = self.make_query_response(inference_vars, answer, fulfill_cx)?;
         let canonical_result = self.canonicalize_response(&query_response);
@@ -108,7 +110,7 @@ impl<'cx, 'gcx, 'tcx> InferCtxt<'cx, 'gcx, 'tcx> {
             canonical_result
         );
 
-        Ok(Lrc::new(canonical_result))
+        Ok(self.tcx.arena.alloc(canonical_result))
     }
 
     /// A version of `make_canonicalized_query_response` that does
@@ -119,14 +121,14 @@ impl<'cx, 'gcx, 'tcx> InferCtxt<'cx, 'gcx, 'tcx> {
     /// If you DO want to keep track of pending obligations (which
     /// include all region obligations, so this includes all cases
     /// that care about regions) with this function, you have to
-    /// do it yourself, by e.g. having them be a part of the answer.
+    /// do it yourself, by e.g., having them be a part of the answer.
     pub fn make_query_response_ignoring_pending_obligations<T>(
         &self,
         inference_vars: CanonicalVarValues<'tcx>,
-        answer: T
-    ) -> Canonical<'gcx, QueryResponse<'gcx, <T as Lift<'gcx>>::Lifted>>
+        answer: T,
+    ) -> Canonical<'tcx, QueryResponse<'tcx, <T as Lift<'tcx>>::Lifted>>
     where
-        T: Debug + Lift<'gcx> + TypeFoldable<'tcx>,
+        T: Debug + Lift<'tcx> + TypeFoldable<'tcx>,
     {
         self.canonicalize_response(&QueryResponse {
             var_values: inference_vars,
@@ -145,7 +147,7 @@ impl<'cx, 'gcx, 'tcx> InferCtxt<'cx, 'gcx, 'tcx> {
         fulfill_cx: &mut dyn TraitEngine<'tcx>,
     ) -> Result<QueryResponse<'tcx, T>, NoSolution>
     where
-        T: Debug + TypeFoldable<'tcx> + Lift<'gcx>,
+        T: Debug + TypeFoldable<'tcx> + Lift<'tcx>,
     {
         let tcx = self.tcx;
 
@@ -267,7 +269,7 @@ impl<'cx, 'gcx, 'tcx> InferCtxt<'cx, 'gcx, 'tcx> {
     ///   they should be ignored).
     /// - It **can happen** (though it rarely does currently) that
     ///   equating types and things will give rise to subobligations
-    ///   that must be processed.  In this case, those subobligations
+    ///   that must be processed. In this case, those subobligations
     ///   are propagated back in the return value.
     /// - Finally, the query result (of type `R`) is propagated back,
     ///   after applying the substitution `S`.
@@ -311,6 +313,11 @@ impl<'cx, 'gcx, 'tcx> InferCtxt<'cx, 'gcx, 'tcx> {
                 }
 
                 (UnpackedKind::Type(v1), UnpackedKind::Type(v2)) => {
+                    let ok = self.at(cause, param_env).eq(v1, v2)?;
+                    obligations.extend(ok.into_obligations());
+                }
+
+                (UnpackedKind::Const(v1), UnpackedKind::Const(v2)) => {
                     let ok = self.at(cause, param_env).eq(v1, v2)?;
                     obligations.extend(ok.into_obligations());
                 }
@@ -473,6 +480,18 @@ impl<'cx, 'gcx, 'tcx> InferCtxt<'cx, 'gcx, 'tcx> {
                         opt_values[br.assert_bound_var()] = Some(*original_value);
                     }
                 }
+                UnpackedKind::Const(result_value) => {
+                    if let ty::Const {
+                        val: ConstValue::Infer(InferConst::Canonical(debrujin, b)),
+                        ..
+                    } = result_value {
+                        // ...in which case we would set `canonical_vars[0]` to `Some(const X)`.
+
+                        // We only allow a `ty::INNERMOST` index in substitutions.
+                        assert_eq!(*debrujin, ty::INNERMOST);
+                        opt_values[*b] = Some(*original_value);
+                    }
+                }
             }
         }
 
@@ -506,7 +525,7 @@ impl<'cx, 'gcx, 'tcx> InferCtxt<'cx, 'gcx, 'tcx> {
 
     /// Given a "guess" at the values for the canonical variables in
     /// the input, try to unify with the *actual* values found in the
-    /// query result.  Often, but not always, this is a no-op, because
+    /// query result. Often, but not always, this is a no-op, because
     /// we already found the mapping in the "guessing" step.
     ///
     /// See also: `query_response_substitution_guess`
@@ -547,7 +566,7 @@ impl<'cx, 'gcx, 'tcx> InferCtxt<'cx, 'gcx, 'tcx> {
         param_env: ty::ParamEnv<'tcx>,
         unsubstituted_region_constraints: &'a [QueryRegionConstraint<'tcx>],
         result_subst: &'a CanonicalVarValues<'tcx>,
-    ) -> impl Iterator<Item = PredicateObligation<'tcx>> + 'a + Captures<'gcx> {
+    ) -> impl Iterator<Item = PredicateObligation<'tcx>> + 'a + Captures<'tcx> {
         unsubstituted_region_constraints
             .iter()
             .map(move |constraint| {
@@ -568,6 +587,11 @@ impl<'cx, 'gcx, 'tcx> InferCtxt<'cx, 'gcx, 'tcx> {
                                 ty::OutlivesPredicate(t1, r2)
                             )
                         ),
+                        UnpackedKind::Const(..) => {
+                            // Consts cannot outlive one another, so we don't expect to
+                            // ecounter this branch.
+                            span_bug!(cause.span, "unexpected const outlives {:?}", constraint);
+                        }
                     }
                 )
             })
@@ -602,6 +626,10 @@ impl<'cx, 'gcx, 'tcx> InferCtxt<'cx, 'gcx, 'tcx> {
                         obligations
                             .extend(self.at(cause, param_env).eq(v1, v2)?.into_obligations());
                     }
+                    (UnpackedKind::Const(v1), UnpackedKind::Const(v2)) => {
+                        let ok = self.at(cause, param_env).eq(v1, v2)?;
+                        obligations.extend(ok.into_obligations());
+                    }
                     _ => {
                         bug!("kind mismatch, cannot unify {:?} and {:?}", value1, value2,);
                     }
@@ -618,7 +646,7 @@ impl<'cx, 'gcx, 'tcx> InferCtxt<'cx, 'gcx, 'tcx> {
 /// Given the region obligations and constraints scraped from the infcx,
 /// creates query region constraints.
 pub fn make_query_outlives<'tcx>(
-    tcx: TyCtxt<'_, '_, 'tcx>,
+    tcx: TyCtxt<'tcx>,
     outlives_obligations: impl Iterator<Item = (Ty<'tcx>, ty::Region<'tcx>)>,
     region_constraints: &RegionConstraintData<'tcx>,
 ) -> Vec<QueryRegionConstraint<'tcx>> {

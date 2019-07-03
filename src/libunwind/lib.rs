@@ -1,7 +1,8 @@
 #![no_std]
 #![unstable(feature = "panic_unwind", issue = "32837")]
 
-#![cfg_attr(stage0, feature(cfg_target_vendor))]
+#![deny(rust_2018_idioms)]
+
 #![feature(link_cfg)]
 #![feature(nll)]
 #![feature(staged_api)]
@@ -10,16 +11,12 @@
 
 #![cfg_attr(not(target_env = "msvc"), feature(libc))]
 
-#[macro_use]
-mod macros;
-
-cfg_if! {
+cfg_if::cfg_if! {
     if #[cfg(target_env = "msvc")] {
         // no extra unwinder support needed
     } else if #[cfg(all(target_arch = "wasm32", not(target_os = "emscripten")))] {
         // no unwinder on the system!
     } else {
-        extern crate libc;
         mod libunwind;
         pub use libunwind::*;
     }

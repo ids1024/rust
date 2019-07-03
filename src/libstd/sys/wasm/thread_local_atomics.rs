@@ -1,5 +1,5 @@
-use sys::thread;
-use sync::atomic::{AtomicUsize, Ordering::SeqCst};
+use crate::sys::thread;
+use crate::sync::atomic::{AtomicUsize, Ordering::SeqCst};
 
 const MAX_KEYS: usize = 128;
 static NEXT_KEY: AtomicUsize = AtomicUsize::new(0);
@@ -11,7 +11,7 @@ struct ThreadControlBlock {
 impl ThreadControlBlock {
     fn new() -> ThreadControlBlock {
         ThreadControlBlock {
-            keys: [0 as *mut u8; MAX_KEYS],
+            keys: [core::ptr::null_mut(); MAX_KEYS],
         }
     }
 

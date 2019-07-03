@@ -1,14 +1,14 @@
 //! Hook into libgraphviz for rendering dataflow graphs for MIR.
 
-use syntax::ast::NodeId;
-use rustc::mir::{BasicBlock, Mir};
-
-use dot;
+use rustc::hir::def_id::DefId;
+use rustc::mir::{BasicBlock, Body};
 
 use std::fs;
 use std::io;
 use std::marker::PhantomData;
 use std::path::Path;
+
+use crate::util::graphviz_safe_def_name;
 
 use super::{BitDenotation, DataflowState};
 use super::DataflowBuilder;
@@ -16,8 +16,8 @@ use super::DebugFormatted;
 
 pub trait MirWithFlowState<'tcx> {
     type BD: BitDenotation<'tcx>;
-    fn node_id(&self) -> NodeId;
-    fn mir(&self) -> &Mir<'tcx>;
+    fn def_id(&self) -> DefId;
+    fn body(&self) -> &Body<'tcx>;
     fn flow_state(&self) -> &DataflowState<'tcx, Self::BD>;
 }
 
@@ -25,8 +25,8 @@ impl<'a, 'tcx, BD> MirWithFlowState<'tcx> for DataflowBuilder<'a, 'tcx, BD>
     where BD: BitDenotation<'tcx>
 {
     type BD = BD;
-    fn node_id(&self) -> NodeId { self.node_id }
-    fn mir(&self) -> &Mir<'tcx> { self.flow_state.mir() }
+    fn def_id(&self) -> DefId { self.def_id }
+    fn body(&self) -> &Body<'tcx> { self.flow_state.body() }
     fn flow_state(&self) -> &DataflowState<'tcx, Self::BD> { &self.flow_state.flow_state }
 }
 
@@ -49,8 +49,8 @@ pub(crate) fn print_borrowck_graph_to<'a, 'tcx, BD, P>(
     let g = Graph { mbcx, phantom: PhantomData, render_idx };
     let mut v = Vec::new();
     dot::render(&g, &mut v)?;
-    debug!("print_borrowck_graph_to path: {} node_id: {}",
-           path.display(), mbcx.node_id);
+    debug!("print_borrowck_graph_to path: {} def_id: {:?}",
+           path.display(), mbcx.def_id);
     fs::write(path, v)
 }
 
@@ -59,8 +59,8 @@ pub type Node = BasicBlock;
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub struct Edge { source: BasicBlock, index: usize }
 
-fn outgoing(mir: &Mir, bb: BasicBlock) -> Vec<Edge> {
-    (0..mir[bb].terminator().successors().count())
+fn outgoing(body: &Body<'_>, bb: BasicBlock) -> Vec<Edge> {
+    (0..body[bb].terminator().successors().count())
         .map(|index| Edge { source: bb, index: index}).collect()
 }
 
@@ -70,18 +70,17 @@ impl<'a, 'tcx, MWF, P> dot::Labeller<'a> for Graph<'a, 'tcx, MWF, P>
 {
     type Node = Node;
     type Edge = Edge;
-    fn graph_id(&self) -> dot::Id {
-        dot::Id::new(format!("graph_for_node_{}",
-                             self.mbcx.node_id()))
-            .unwrap()
+    fn graph_id(&self) -> dot::Id<'_> {
+        let name = graphviz_safe_def_name(self.mbcx.def_id());
+        dot::Id::new(format!("graph_for_def_id_{}", name)).unwrap()
     }
 
-    fn node_id(&self, n: &Node) -> dot::Id {
+    fn node_id(&self, n: &Node) -> dot::Id<'_> {
         dot::Id::new(format!("bb_{}", n.index()))
             .unwrap()
     }
 
-    fn node_label(&self, n: &Node) -> dot::LabelText {
+    fn node_label(&self, n: &Node) -> dot::LabelText<'_> {
         // Node label is something like this:
         // +---------+----------------------------------+------------------+------------------+
         // | ENTRY   | MIR                              | GEN              | KILL             |
@@ -100,17 +99,17 @@ impl<'a, 'tcx, MWF, P> dot::Labeller<'a> for Graph<'a, 'tcx, MWF, P>
         // | [00-00] | _7 = const Foo::twiddle(move _8) | [0c-00]          | [f3-0f]          |
         // +---------+----------------------------------+------------------+------------------+
         let mut v = Vec::new();
-        self.node_label_internal(n, &mut v, *n, self.mbcx.mir()).unwrap();
+        self.node_label_internal(n, &mut v, *n, self.mbcx.body()).unwrap();
         dot::LabelText::html(String::from_utf8(v).unwrap())
     }
 
 
-    fn node_shape(&self, _n: &Node) -> Option<dot::LabelText> {
+    fn node_shape(&self, _n: &Node) -> Option<dot::LabelText<'_>> {
         Some(dot::LabelText::label("none"))
     }
 
     fn edge_label(&'a self, e: &Edge) -> dot::LabelText<'a> {
-        let term = self.mbcx.mir()[e.source].terminator();
+        let term = self.mbcx.body()[e.source].terminator();
         let label = &term.kind.fmt_successor_labels()[e.index];
         dot::LabelText::label(label.clone())
     }
@@ -125,7 +124,7 @@ where MWF: MirWithFlowState<'tcx>,
                                          n: &Node,
                                          w: &mut W,
                                          block: BasicBlock,
-                                         mir: &Mir) -> io::Result<()> {
+                                         body: &Body<'_>) -> io::Result<()> {
         // Header rows
         const HDRS: [&str; 4] = ["ENTRY", "MIR", "BLOCK GENS", "BLOCK KILLS"];
         const HDR_FMT: &str = "bgcolor=\"grey\"";
@@ -138,19 +137,19 @@ where MWF: MirWithFlowState<'tcx>,
         write!(w, "</tr>")?;
 
         // Data row
-        self.node_label_verbose_row(n, w, block, mir)?;
-        self.node_label_final_row(n, w, block, mir)?;
+        self.node_label_verbose_row(n, w, block, body)?;
+        self.node_label_final_row(n, w, block, body)?;
         write!(w, "</table>")?;
 
         Ok(())
     }
 
-    /// Build the verbose row: full MIR data, and detailed gen/kill/entry sets
+    /// Builds the verbose row: full MIR data, and detailed gen/kill/entry sets.
     fn node_label_verbose_row<W: io::Write>(&self,
                                             n: &Node,
                                             w: &mut W,
                                             block: BasicBlock,
-                                            mir: &Mir)
+                                            body: &Body<'_>)
                                             -> io::Result<()> {
         let i = n.index();
 
@@ -176,7 +175,7 @@ where MWF: MirWithFlowState<'tcx>,
         // MIR statements
         write!(w, "<td>")?;
         {
-            let data = &mir[block];
+            let data = &body[block];
             for (i, statement) in data.statements.iter().enumerate() {
                 write!(w, "{}<br align=\"left\"/>",
                        dot::escape_html(&format!("{:3}: {:?}", i, statement)))?;
@@ -195,12 +194,12 @@ where MWF: MirWithFlowState<'tcx>,
         Ok(())
     }
 
-    /// Build the summary row: terminator, gen/kill/entry bit sets
+    /// Builds the summary row: terminator, gen/kill/entry bit sets.
     fn node_label_final_row<W: io::Write>(&self,
                                           n: &Node,
                                           w: &mut W,
                                           block: BasicBlock,
-                                          mir: &Mir)
+                                          body: &Body<'_>)
                                           -> io::Result<()> {
         let i = n.index();
 
@@ -215,7 +214,7 @@ where MWF: MirWithFlowState<'tcx>,
         // Terminator
         write!(w, "<td>")?;
         {
-            let data = &mir[block];
+            let data = &body[block];
             let mut terminator_head = String::new();
             data.terminator().kind.fmt_head(&mut terminator_head).unwrap();
             write!(w, "{}", dot::escape_html(&terminator_head))?;
@@ -241,20 +240,20 @@ impl<'a, 'tcx, MWF, P> dot::GraphWalk<'a> for Graph<'a, 'tcx, MWF, P>
 {
     type Node = Node;
     type Edge = Edge;
-    fn nodes(&self) -> dot::Nodes<Node> {
-        self.mbcx.mir()
+    fn nodes(&self) -> dot::Nodes<'_, Node> {
+        self.mbcx.body()
             .basic_blocks()
             .indices()
             .collect::<Vec<_>>()
             .into()
     }
 
-    fn edges(&self) -> dot::Edges<Edge> {
-        let mir = self.mbcx.mir();
+    fn edges(&self) -> dot::Edges<'_, Edge> {
+        let body = self.mbcx.body();
 
-        mir.basic_blocks()
+        body.basic_blocks()
            .indices()
-           .flat_map(|bb| outgoing(mir, bb))
+           .flat_map(|bb| outgoing(body, bb))
            .collect::<Vec<_>>()
            .into()
     }
@@ -264,7 +263,7 @@ impl<'a, 'tcx, MWF, P> dot::GraphWalk<'a> for Graph<'a, 'tcx, MWF, P>
     }
 
     fn target(&self, edge: &Edge) -> Node {
-        let mir = self.mbcx.mir();
-        *mir[edge.source].terminator().successors().nth(edge.index).unwrap()
+        let body = self.mbcx.body();
+        *body[edge.source].terminator().successors().nth(edge.index).unwrap()
     }
 }

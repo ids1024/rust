@@ -1,19 +1,19 @@
-//! Implementation of `std::os` functionality for Windows
+//! Implementation of `std::os` functionality for Windows.
 
 #![allow(nonstandard_style)]
 
-use os::windows::prelude::*;
+use crate::os::windows::prelude::*;
 
-use error::Error as StdError;
-use ffi::{OsString, OsStr};
-use fmt;
-use io;
-use os::windows::ffi::EncodeWide;
-use path::{self, PathBuf};
-use ptr;
-use slice;
-use sys::{c, cvt};
-use sys::handle::Handle;
+use crate::error::Error as StdError;
+use crate::ffi::{OsString, OsStr};
+use crate::fmt;
+use crate::io;
+use crate::os::windows::ffi::EncodeWide;
+use crate::path::{self, PathBuf};
+use crate::ptr;
+use crate::slice;
+use crate::sys::{c, cvt};
+use crate::sys::handle::Handle;
 
 use super::to_u16s;
 
@@ -136,7 +136,7 @@ pub struct SplitPaths<'a> {
     must_yield: bool,
 }
 
-pub fn split_paths(unparsed: &OsStr) -> SplitPaths {
+pub fn split_paths(unparsed: &OsStr) -> SplitPaths<'_> {
     SplitPaths {
         data: unparsed.encode_wide(),
         must_yield: true,
@@ -212,7 +212,7 @@ pub fn join_paths<I, T>(paths: I) -> Result<OsString, JoinPathsError>
 }
 
 impl fmt::Display for JoinPathsError {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         "path segment contains `\"`".fmt(f)
     }
 }
@@ -285,8 +285,8 @@ pub fn temp_dir() -> PathBuf {
 }
 
 pub fn home_dir() -> Option<PathBuf> {
-    ::env::var_os("HOME").or_else(|| {
-        ::env::var_os("USERPROFILE")
+    crate::env::var_os("HOME").or_else(|| {
+        crate::env::var_os("USERPROFILE")
     }).map(PathBuf::from).or_else(|| unsafe {
         let me = c::GetCurrentProcess();
         let mut token = ptr::null_mut();
@@ -314,8 +314,8 @@ pub fn getpid() -> u32 {
 
 #[cfg(test)]
 mod tests {
-    use io::Error;
-    use sys::c;
+    use crate::io::Error;
+    use crate::sys::c;
 
     // tests `error_string` above
     #[test]

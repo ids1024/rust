@@ -1,7 +1,4 @@
-#![feature(generators, generator_trait)]
-
-use std::ops::{GeneratorState, Generator};
-use std::cell::Cell;
+#![feature(generators)]
 
 fn foo(x: &i32) {
     // In this case, a reference to `b` escapes the generator, but not
@@ -12,7 +9,7 @@ fn foo(x: &i32) {
         yield();
         let b = 5;
         a = &b;
-        //~^ ERROR `b` does not live long enough
+        //~^ ERROR borrowed data escapes outside of generator
     };
 }
 

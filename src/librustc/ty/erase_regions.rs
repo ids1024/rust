@@ -1,5 +1,5 @@
-use ty::{self, Ty, TyCtxt};
-use ty::fold::{TypeFolder, TypeFoldable};
+use crate::ty::{self, Ty, TyCtxt, TypeFlags};
+use crate::ty::fold::{TypeFolder, TypeFoldable};
 
 pub(super) fn provide(providers: &mut ty::query::Providers<'_>) {
     *providers = ty::query::Providers {
@@ -8,31 +8,36 @@ pub(super) fn provide(providers: &mut ty::query::Providers<'_>) {
     };
 }
 
-fn erase_regions_ty<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>, ty: Ty<'tcx>) -> Ty<'tcx> {
+fn erase_regions_ty<'tcx>(tcx: TyCtxt<'tcx>, ty: Ty<'tcx>) -> Ty<'tcx> {
     // N.B., use `super_fold_with` here. If we used `fold_with`, it
     // could invoke the `erase_regions_ty` query recursively.
     ty.super_fold_with(&mut RegionEraserVisitor { tcx })
 }
 
-impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
+impl<'tcx> TyCtxt<'tcx> {
     /// Returns an equivalent value with all free regions removed (note
     /// that late-bound regions remain, because they are important for
     /// subtyping, but they are anonymized and normalized as well)..
     pub fn erase_regions<T>(self, value: &T) -> T
         where T : TypeFoldable<'tcx>
     {
+        // If there's nothing to erase avoid performing the query at all
+        if !value.has_type_flags(TypeFlags::HAS_RE_LATE_BOUND | TypeFlags::HAS_FREE_REGIONS) {
+            return value.clone();
+        }
+
         let value1 = value.fold_with(&mut RegionEraserVisitor { tcx: self });
         debug!("erase_regions({:?}) = {:?}", value, value1);
         value1
     }
 }
 
-struct RegionEraserVisitor<'a, 'gcx: 'tcx, 'tcx: 'a> {
-    tcx: TyCtxt<'a, 'gcx, 'tcx>,
+struct RegionEraserVisitor<'tcx> {
+    tcx: TyCtxt<'tcx>,
 }
 
-impl<'a, 'gcx, 'tcx> TypeFolder<'gcx, 'tcx> for RegionEraserVisitor<'a, 'gcx, 'tcx> {
-    fn tcx<'b>(&'b self) -> TyCtxt<'b, 'gcx, 'tcx> {
+impl TypeFolder<'tcx> for RegionEraserVisitor<'tcx> {
+    fn tcx<'b>(&'b self) -> TyCtxt<'tcx> {
         self.tcx
     }
 
@@ -62,7 +67,7 @@ impl<'a, 'gcx, 'tcx> TypeFolder<'gcx, 'tcx> for RegionEraserVisitor<'a, 'gcx, 't
         // whenever a substitution occurs.
         match *r {
             ty::ReLateBound(..) => r,
-            _ => self.tcx.types.re_erased
+            _ => self.tcx.lifetimes.re_erased
         }
     }
 }

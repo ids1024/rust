@@ -1,8 +1,9 @@
-use cmp::Ordering;
-use fmt;
-use sys::{cvt, syscall};
-use time::Duration;
-use convert::TryInto;
+use crate::cmp::Ordering;
+use crate::fmt;
+use crate::sys::{cvt, syscall};
+use crate::time::Duration;
+use crate::convert::TryInto;
+
 use core::hash::{Hash, Hasher};
 
 const NSEC_PER_SEC: u64 = 1_000_000_000;
@@ -136,10 +137,8 @@ impl Instant {
         false
     }
 
-    pub fn sub_instant(&self, other: &Instant) -> Duration {
-        self.t.sub_timespec(&other.t).unwrap_or_else(|_| {
-            panic!("specified instant was later than self")
-        })
+    pub fn checked_sub_instant(&self, other: &Instant) -> Option<Duration> {
+        self.t.sub_timespec(&other.t).ok()
     }
 
     pub fn checked_add_duration(&self, other: &Duration) -> Option<Instant> {
@@ -152,7 +151,7 @@ impl Instant {
 }
 
 impl fmt::Debug for Instant {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Instant")
          .field("tv_sec", &self.t.t.tv_sec)
          .field("tv_nsec", &self.t.t.tv_nsec)
@@ -186,7 +185,7 @@ impl From<syscall::TimeSpec> for SystemTime {
 }
 
 impl fmt::Debug for SystemTime {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("SystemTime")
          .field("tv_sec", &self.t.t.tv_sec)
          .field("tv_nsec", &self.t.t.tv_nsec)

@@ -1,125 +1,25 @@
-use session::config::Options;
-
+use std::borrow::Cow;
+use std::error::Error;
 use std::fs;
-use std::io::{self, StderrLock, Write};
-use std::time::Instant;
+use std::mem::{self, Discriminant};
+use std::path::Path;
+use std::process;
+use std::thread::ThreadId;
+use std::u32;
 
-macro_rules! define_categories {
-    ($($name:ident,)*) => {
-        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-        pub enum ProfileCategory {
-            $($name),*
-        }
+use crate::ty::query::QueryName;
 
-        #[allow(nonstandard_style)]
-        struct Categories<T> {
-            $($name: T),*
-        }
+use measureme::{StringId, TimestampKind};
 
-        impl<T: Default> Categories<T> {
-            fn new() -> Categories<T> {
-                Categories {
-                    $($name: T::default()),*
-                }
-            }
-        }
+/// MmapSerializatioSink is faster on macOS and Linux
+/// but FileSerializationSink is faster on Windows
+#[cfg(not(windows))]
+type Profiler = measureme::Profiler<measureme::MmapSerializationSink>;
+#[cfg(windows)]
+type Profiler = measureme::Profiler<measureme::FileSerializationSink>;
 
-        impl<T> Categories<T> {
-            fn get(&self, category: ProfileCategory) -> &T {
-                match category {
-                    $(ProfileCategory::$name => &self.$name),*
-                }
-            }
-
-            fn set(&mut self, category: ProfileCategory, value: T) {
-                match category {
-                    $(ProfileCategory::$name => self.$name = value),*
-                }
-            }
-        }
-
-        struct CategoryData {
-            times: Categories<u64>,
-            query_counts: Categories<(u64, u64)>,
-        }
-
-        impl CategoryData {
-            fn new() -> CategoryData {
-                CategoryData {
-                    times: Categories::new(),
-                    query_counts: Categories::new(),
-                }
-            }
-
-            fn print(&self, lock: &mut StderrLock<'_>) {
-                writeln!(lock, "| Phase            | Time (ms)      \
-                                | Time (%) | Queries        | Hits (%)")
-                    .unwrap();
-                writeln!(lock, "| ---------------- | -------------- \
-                                | -------- | -------------- | --------")
-                    .unwrap();
-
-                let total_time = ($(self.times.$name + )* 0) as f32;
-
-                $(
-                    let (hits, computed) = self.query_counts.$name;
-                    let total = hits + computed;
-                    let (hits, total) = if total > 0 {
-                        (format!("{:.2}",
-                        (((hits as f32) / (total as f32)) * 100.0)), total.to_string())
-                    } else {
-                        (String::new(), String::new())
-                    };
-
-                    writeln!(
-                        lock,
-                        "| {0: <16} | {1: <14} | {2: <8.2} | {3: <14} | {4: <8}",
-                        stringify!($name),
-                        self.times.$name / 1_000_000,
-                        ((self.times.$name as f32) / total_time) * 100.0,
-                        total,
-                        hits,
-                    ).unwrap();
-                )*
-            }
-
-            fn json(&self) -> String {
-                let mut json = String::from("[");
-
-                $(
-                    let (hits, computed) = self.query_counts.$name;
-                    let total = hits + computed;
-
-                    //normalize hits to 0%
-                    let hit_percent =
-                        if total > 0 {
-                            ((hits as f32) / (total as f32)) * 100.0
-                        } else {
-                            0.0
-                        };
-
-                    json.push_str(&format!(
-                        "{{ \"category\": \"{}\", \"time_ms\": {},\
-                            \"query_count\": {}, \"query_hits\": {} }},",
-                        stringify!($name),
-                        self.times.$name / 1_000_000,
-                        total,
-                        format!("{:.2}", hit_percent)
-                    ));
-                )*
-
-                //remove the trailing ',' character
-                json.pop();
-
-                json.push(']');
-
-                json
-            }
-        }
-    }
-}
-
-define_categories! {
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Ord, PartialOrd)]
+pub enum ProfileCategory {
     Parsing,
     Expansion,
     TypeChecking,
@@ -129,128 +29,217 @@ define_categories! {
     Other,
 }
 
+bitflags! {
+    struct EventFilter: u32 {
+        const GENERIC_ACTIVITIES = 1 << 0;
+        const QUERY_PROVIDERS    = 1 << 1;
+        const QUERY_CACHE_HITS   = 1 << 2;
+        const QUERY_BLOCKED      = 1 << 3;
+        const INCR_CACHE_LOADS   = 1 << 4;
+
+        const DEFAULT = Self::GENERIC_ACTIVITIES.bits |
+                        Self::QUERY_PROVIDERS.bits |
+                        Self::QUERY_BLOCKED.bits |
+                        Self::INCR_CACHE_LOADS.bits;
+
+        // empty() and none() aren't const-fns unfortunately
+        const NONE = 0;
+        const ALL  = !Self::NONE.bits;
+    }
+}
+
+const EVENT_FILTERS_BY_NAME: &[(&str, EventFilter)] = &[
+    ("none", EventFilter::NONE),
+    ("all", EventFilter::ALL),
+    ("generic-activity", EventFilter::GENERIC_ACTIVITIES),
+    ("query-provider", EventFilter::QUERY_PROVIDERS),
+    ("query-cache-hit", EventFilter::QUERY_CACHE_HITS),
+    ("query-blocked" , EventFilter::QUERY_BLOCKED),
+    ("incr-cache-load", EventFilter::INCR_CACHE_LOADS),
+];
+
+fn thread_id_to_u64(tid: ThreadId) -> u64 {
+    unsafe { mem::transmute::<ThreadId, u64>(tid) }
+}
+
 pub struct SelfProfiler {
-    timer_stack: Vec<ProfileCategory>,
-    data: CategoryData,
-    current_timer: Instant,
+    profiler: Profiler,
+    event_filter_mask: EventFilter,
+    query_event_kind: StringId,
+    generic_activity_event_kind: StringId,
+    incremental_load_result_event_kind: StringId,
+    query_blocked_event_kind: StringId,
+    query_cache_hit_event_kind: StringId,
 }
 
 impl SelfProfiler {
-    pub fn new() -> SelfProfiler {
-        let mut profiler = SelfProfiler {
-            timer_stack: Vec::new(),
-            data: CategoryData::new(),
-            current_timer: Instant::now(),
+    pub fn new(
+        output_directory: &Path,
+        crate_name: Option<&str>,
+        event_filters: &Option<Vec<String>>
+    ) -> Result<SelfProfiler, Box<dyn Error>> {
+        fs::create_dir_all(output_directory)?;
+
+        let crate_name = crate_name.unwrap_or("unknown-crate");
+        let filename = format!("{}-{}.rustc_profile", crate_name, process::id());
+        let path = output_directory.join(&filename);
+        let profiler = Profiler::new(&path)?;
+
+        let query_event_kind = profiler.alloc_string("Query");
+        let generic_activity_event_kind = profiler.alloc_string("GenericActivity");
+        let incremental_load_result_event_kind = profiler.alloc_string("IncrementalLoadResult");
+        let query_blocked_event_kind = profiler.alloc_string("QueryBlocked");
+        let query_cache_hit_event_kind = profiler.alloc_string("QueryCacheHit");
+
+        let mut event_filter_mask = EventFilter::empty();
+
+        if let Some(ref event_filters) = *event_filters {
+            let mut unknown_events = vec![];
+            for item in event_filters {
+                if let Some(&(_, mask)) = EVENT_FILTERS_BY_NAME.iter()
+                                                               .find(|&(name, _)| name == item) {
+                    event_filter_mask |= mask;
+                } else {
+                    unknown_events.push(item.clone());
+                }
+            }
+
+            // Warn about any unknown event names
+            if unknown_events.len() > 0 {
+                unknown_events.sort();
+                unknown_events.dedup();
+
+                warn!("Unknown self-profiler events specified: {}. Available options are: {}.",
+                    unknown_events.join(", "),
+                    EVENT_FILTERS_BY_NAME.iter()
+                                         .map(|&(name, _)| name.to_string())
+                                         .collect::<Vec<_>>()
+                                         .join(", "));
+            }
+        } else {
+            event_filter_mask = EventFilter::DEFAULT;
+        }
+
+        Ok(SelfProfiler {
+            profiler,
+            event_filter_mask,
+            query_event_kind,
+            generic_activity_event_kind,
+            incremental_load_result_event_kind,
+            query_blocked_event_kind,
+            query_cache_hit_event_kind,
+        })
+    }
+
+    fn get_query_name_string_id(query_name: QueryName) -> StringId {
+        let discriminant = unsafe {
+            mem::transmute::<Discriminant<QueryName>, u64>(mem::discriminant(&query_name))
         };
 
-        profiler.start_activity(ProfileCategory::Other);
-
-        profiler
+        StringId::reserved(discriminant as u32)
     }
 
-    pub fn start_activity(&mut self, category: ProfileCategory) {
-        match self.timer_stack.last().cloned() {
-            None => {
-                self.current_timer = Instant::now();
-            },
-            Some(current_category) if current_category == category => {
-                //since the current category is the same as the new activity's category,
-                //we don't need to do anything with the timer, we just need to push it on the stack
-            }
-            Some(current_category) => {
-                let elapsed = self.stop_timer();
+    pub fn register_query_name(&self, query_name: QueryName) {
+        let id = SelfProfiler::get_query_name_string_id(query_name);
+        self.profiler.alloc_string_with_reserved_id(id, query_name.as_str());
+    }
 
-                //record the current category's time
-                let new_time = self.data.times.get(current_category) + elapsed;
-                self.data.times.set(current_category, new_time);
-            }
+    #[inline]
+    pub fn start_activity(
+        &self,
+        label: impl Into<Cow<'static, str>>,
+    ) {
+        if self.event_filter_mask.contains(EventFilter::GENERIC_ACTIVITIES) {
+            self.record(&label.into(), self.generic_activity_event_kind, TimestampKind::Start);
         }
-
-        //push the new category
-        self.timer_stack.push(category);
     }
 
-    pub fn record_computed_queries(&mut self, category: ProfileCategory, count: usize) {
-        let (hits, computed) = *self.data.query_counts.get(category);
-        self.data.query_counts.set(category, (hits, computed + count as u64));
-    }
-
-    pub fn record_query_hit(&mut self, category: ProfileCategory) {
-        let (hits, computed) = *self.data.query_counts.get(category);
-        self.data.query_counts.set(category, (hits + 1, computed));
-    }
-
-    pub fn end_activity(&mut self, category: ProfileCategory) {
-        match self.timer_stack.pop() {
-            None => bug!("end_activity() was called but there was no running activity"),
-            Some(c) =>
-                assert!(
-                    c == category,
-                    "end_activity() was called but a different activity was running"),
+    #[inline]
+    pub fn end_activity(
+        &self,
+        label: impl Into<Cow<'static, str>>,
+    ) {
+        if self.event_filter_mask.contains(EventFilter::GENERIC_ACTIVITIES) {
+            self.record(&label.into(), self.generic_activity_event_kind, TimestampKind::End);
         }
+    }
 
-        //check if the new running timer is in the same category as this one
-        //if it is, we don't need to do anything
-        if let Some(c) = self.timer_stack.last() {
-            if *c == category {
-                return;
-            }
+    #[inline]
+    pub fn record_query_hit(&self, query_name: QueryName) {
+        if self.event_filter_mask.contains(EventFilter::QUERY_CACHE_HITS) {
+            self.record_query(query_name, self.query_cache_hit_event_kind, TimestampKind::Instant);
         }
-
-        //the new timer is different than the previous,
-        //so record the elapsed time and start a new timer
-        let elapsed = self.stop_timer();
-        let new_time = self.data.times.get(category) + elapsed;
-        self.data.times.set(category, new_time);
     }
 
-    fn stop_timer(&mut self) -> u64 {
-        let elapsed = self.current_timer.elapsed();
-
-        self.current_timer = Instant::now();
-
-        (elapsed.as_secs() * 1_000_000_000) + (elapsed.subsec_nanos() as u64)
+    #[inline]
+    pub fn start_query(&self, query_name: QueryName) {
+        if self.event_filter_mask.contains(EventFilter::QUERY_PROVIDERS) {
+            self.record_query(query_name, self.query_event_kind, TimestampKind::Start);
+        }
     }
 
-    pub fn print_results(&mut self, opts: &Options) {
-        self.end_activity(ProfileCategory::Other);
-
-        assert!(
-            self.timer_stack.is_empty(),
-            "there were timers running when print_results() was called");
-
-        let out = io::stderr();
-        let mut lock = out.lock();
-
-        let crate_name =
-            opts.crate_name
-            .as_ref()
-            .map(|n| format!(" for {}", n))
-            .unwrap_or_default();
-
-        writeln!(lock, "Self profiling results{}:", crate_name).unwrap();
-        writeln!(lock).unwrap();
-
-        self.data.print(&mut lock);
-
-        writeln!(lock).unwrap();
-        writeln!(lock, "Optimization level: {:?}", opts.optimize).unwrap();
-
-        let incremental = if opts.incremental.is_some() { "on" } else { "off" };
-        writeln!(lock, "Incremental: {}", incremental).unwrap();
+    #[inline]
+    pub fn end_query(&self, query_name: QueryName) {
+        if self.event_filter_mask.contains(EventFilter::QUERY_PROVIDERS) {
+            self.record_query(query_name, self.query_event_kind, TimestampKind::End);
+        }
     }
 
-    pub fn save_results(&self, opts: &Options) {
-        let category_data = self.data.json();
-        let compilation_options =
-            format!("{{ \"optimization_level\": \"{:?}\", \"incremental\": {} }}",
-                    opts.optimize,
-                    if opts.incremental.is_some() { "true" } else { "false" });
+    #[inline]
+    pub fn incremental_load_result_start(&self, query_name: QueryName) {
+        if self.event_filter_mask.contains(EventFilter::INCR_CACHE_LOADS) {
+            self.record_query(
+                query_name,
+                self.incremental_load_result_event_kind,
+                TimestampKind::Start
+            );
+        }
+    }
 
-        let json = format!("{{ \"category_data\": {}, \"compilation_options\": {} }}",
-                        category_data,
-                        compilation_options);
+    #[inline]
+    pub fn incremental_load_result_end(&self, query_name: QueryName) {
+        if self.event_filter_mask.contains(EventFilter::INCR_CACHE_LOADS) {
+            self.record_query(
+                query_name,
+                self.incremental_load_result_event_kind,
+                TimestampKind::End
+            );
+        }
+    }
 
-        fs::write("self_profiler_results.json", json).unwrap();
+    #[inline]
+    pub fn query_blocked_start(&self, query_name: QueryName) {
+        if self.event_filter_mask.contains(EventFilter::QUERY_BLOCKED) {
+            self.record_query(query_name, self.query_blocked_event_kind, TimestampKind::Start);
+        }
+    }
+
+    #[inline]
+    pub fn query_blocked_end(&self, query_name: QueryName) {
+        if self.event_filter_mask.contains(EventFilter::QUERY_BLOCKED) {
+            self.record_query(query_name, self.query_blocked_event_kind, TimestampKind::End);
+        }
+    }
+
+    #[inline]
+    fn record(&self, event_id: &str, event_kind: StringId, timestamp_kind: TimestampKind) {
+        let thread_id = thread_id_to_u64(std::thread::current().id());
+
+        let event_id = self.profiler.alloc_string(event_id);
+        self.profiler.record_event(event_kind, event_id, thread_id, timestamp_kind);
+    }
+
+    #[inline]
+    fn record_query(
+        &self,
+        query_name: QueryName,
+        event_kind: StringId,
+        timestamp_kind: TimestampKind,
+    ) {
+        let dep_node_name = SelfProfiler::get_query_name_string_id(query_name);
+
+        let thread_id = thread_id_to_u64(std::thread::current().id());
+
+        self.profiler.record_event(event_kind, dep_node_name, thread_id, timestamp_kind);
     }
 }
